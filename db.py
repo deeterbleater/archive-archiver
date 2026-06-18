@@ -295,9 +295,12 @@ def get_backlog_counts(extractor="plaintext.v2"):
     LEFT JOIN downloads ON downloads.file_id = files.id
     WHERE
         COALESCE(files.download_url, files.url, '') <> ''
-        AND (downloads.id IS NULL OR downloads.status = 'failed')
+        AND downloads.id IS NULL
     """)
     pending_downloads = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM downloads WHERE status = 'failed'")
+    failed_downloads = cursor.fetchone()[0]
 
     cursor.execute("""
     SELECT COUNT(*)
@@ -327,12 +330,13 @@ def get_backlog_counts(extractor="plaintext.v2"):
     conn.close()
     return {
         "pending_downloads": pending_downloads,
+        "failed_downloads": failed_downloads,
         "pending_extractions": pending_extractions,
         "pending_raw_archives": pending_raw_archives,
     }
 
 def get_pending_download_files(limit=10):
-    """Returns file records that have not been downloaded successfully."""
+    """Returns file records that have not yet had a download attempt."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -348,7 +352,7 @@ def get_pending_download_files(limit=10):
     LEFT JOIN downloads ON downloads.file_id = files.id
     WHERE
         COALESCE(files.download_url, files.url, '') <> ''
-        AND (downloads.id IS NULL OR downloads.status = 'failed')
+        AND downloads.id IS NULL
     ORDER BY files.id ASC
     LIMIT ?
     """, (limit,))

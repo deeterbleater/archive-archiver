@@ -75,6 +75,27 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(stats["downloads_by_status"], {"downloaded": 1})
         self.assertEqual(stats["extractions_by_status"], {"processed": 1})
 
+    def test_failed_download_falls_off_pending_list(self):
+        work_id = db.add_work(title="Broken Link", author="Test Author", search_query="failures")
+        db.add_file(
+            work_id=work_id,
+            site="broken.example",
+            format="PDF",
+            url="https://broken.example/detail",
+            download_source="fixture",
+            download_url="https://broken.example/missing.pdf",
+        )
+        pending = db.get_pending_download_files(limit=10)
+        file_id = pending[0]["id"]
+
+        db.mark_download_started(file_id)
+        db.mark_download_failed(file_id, "HTTP 404", http_status=404)
+
+        self.assertEqual(db.get_pending_download_files(limit=10), [])
+        self.assertEqual(db.get_stats()["downloads_by_status"], {"failed": 1})
+        self.assertEqual(db.get_backlog_counts()["pending_downloads"], 0)
+        self.assertEqual(db.get_backlog_counts()["failed_downloads"], 1)
+
     def test_corpus_build_is_deterministic_and_records_substitutions(self):
         self._add_processed_text("Beta", "The self owns the text.")
         self._add_processed_text("Alpha", "The text owns the order.")

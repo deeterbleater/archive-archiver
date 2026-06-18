@@ -70,6 +70,7 @@ def summary():
             COALESCE(SUM(downloads.bytes), 0) AS downloaded_bytes,
             COALESCE(SUM(extractions.char_count), 0) AS extracted_chars,
             COUNT(DISTINCT CASE WHEN downloads.status = 'downloaded' THEN downloads.file_id END) AS downloaded_files,
+            COUNT(DISTINCT CASE WHEN downloads.status = 'failed' THEN downloads.file_id END) AS failed_download_files,
             COUNT(DISTINCT CASE WHEN extractions.status = 'processed' THEN extractions.id END) AS processed_texts,
             COUNT(DISTINCT CASE WHEN files.trust_level = 'untrusted' THEN files.id END) AS untrusted_files,
             COUNT(DISTINCT CASE WHEN downloads.scan_status = 'clean' THEN downloads.id END) AS clean_scans,
@@ -87,7 +88,7 @@ def summary():
         FROM files
         LEFT JOIN downloads ON downloads.file_id = files.id
         WHERE COALESCE(files.download_url, files.url, '') <> ''
-          AND (downloads.id IS NULL OR downloads.status = 'failed')
+          AND downloads.id IS NULL
     """)
     return {**base, **extra, **pending}
 

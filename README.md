@@ -62,6 +62,11 @@ Download pending file rows into the raw bucket:
 python cli.py download --limit 10 --rps 0.2 --max-mb 250
 ```
 
+Failed downloads are recorded under `downloads.status = 'failed'` and reported
+as failure metrics, but they are removed from the automatic pending queue.
+Requeue a failed file by clearing or updating its download row intentionally
+after review.
+
 Downloads are written to quarantine first, scanned, and only then promoted to
 the raw bucket. Files discovered through `slum_archives` are marked
 `untrusted`; if `clamscan` is unavailable for an untrusted file, the download is

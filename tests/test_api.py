@@ -79,6 +79,34 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(trust[0]["trust_level"], "trusted")
         self.assertEqual(raw_archives[0]["status"], "local")
 
+    def test_summary_separates_pending_and_failed_downloads(self):
+        work_id = db.add_work("Download States", "Test Author", "states")
+        db.add_file(
+            work_id=work_id,
+            site="example.org",
+            format="Text",
+            url="https://example.org/pending",
+            download_source="fixture",
+            download_url="https://example.org/pending.txt",
+        )
+        db.add_file(
+            work_id=work_id,
+            site="example.org",
+            format="PDF",
+            url="https://example.org/failed",
+            download_source="fixture",
+            download_url="https://example.org/failed.pdf",
+        )
+        failed_file_id = db.get_pending_download_files(limit=10)[1]["id"]
+        db.mark_download_started(failed_file_id)
+        db.mark_download_failed(failed_file_id, "HTTP 404", http_status=404)
+
+        summary = self.api.summary()
+
+        self.assertEqual(summary["pending_download_files"], 1)
+        self.assertEqual(summary["failed_download_files"], 1)
+        self.assertEqual(summary["downloads_by_status"], {"failed": 1})
+
     def test_work_drilldown(self):
         work_id = self._add_fixture()
 

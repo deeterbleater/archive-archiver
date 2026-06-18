@@ -440,6 +440,9 @@ venv/bin/python -m py_compile api.py cli.py db.py downloader.py llm.py processor
   OpenRouter model availability or JSON parse failures.
 - Failed torrent downloads from Archive.org are expected occasionally. HTTP 403
   on `Archive BitTorrent` rows does not imply the whole cycle failed.
+- Failed downloads are retained as metrics and review records, but they fall
+  out of the automatic pending queue. Requeue only after intentional review by
+  clearing or updating the corresponding `downloads` row.
 - Port `8080` is already occupied by a docker proxy on this server, so the API
   uses port `8090`. Nginx routes `https://api.ufotoken.app` to port `8090`.
 - Runtime logs are ignored by git via `logs/`.
