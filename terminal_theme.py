@@ -69,6 +69,30 @@ def print_pip(status, message):
     print_markup(f"{pip(status)} {message}")
 
 
+def _format_tool_value(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return str(value)
+    return repr(value)
+
+
+def tool_call_renderable(name, arguments=None):
+    arguments = arguments or {}
+    table = Table.grid(expand=False)
+    table.add_column(justify="right", style="label", no_wrap=True)
+    table.add_column(style="tool", no_wrap=True)
+    table.add_column(style="muted")
+    table.add_row(Text("•", style="tool"), Text(str(name), style="highlight"), Text("tool call", style="muted"))
+    for key in sorted(arguments):
+        table.add_row("", Text(str(key), style="label"), Text(_format_tool_value(arguments[key])))
+    return table
+
+
+def print_tool_call(name, arguments=None):
+    console.print(tool_call_renderable(name, arguments))
+
+
 def make_table(*columns, title=None):
     table = Table(title=title, border_style="pond", header_style="label", show_lines=False)
     for column in columns:

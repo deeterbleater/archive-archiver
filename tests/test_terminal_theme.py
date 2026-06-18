@@ -32,6 +32,20 @@ class TerminalThemeTests(unittest.TestCase):
         self.assertEqual(terminal_theme.pip("success"), "[success]•[/success]")
         self.assertEqual(terminal_theme.pip("failed"), "[danger]•[/danger]")
 
+    def test_tool_call_renderable_shows_name_and_arguments(self):
+        renderable = terminal_theme.tool_call_renderable(
+            "web_search",
+            {"query": "witchcraft occult archives", "limit": 10},
+        )
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(renderable)
+        output = capture.get()
+
+        self.assertIn("web_search", output)
+        self.assertIn("query", output)
+        self.assertIn("witchcraft occult archives", output)
+        self.assertIn("limit", output)
+
 
 if __name__ == "__main__":
     unittest.main()

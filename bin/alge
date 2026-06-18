@@ -23,12 +23,14 @@ fi
 
 SESSION_NAME="${ALGE_TMUX_SESSION:-alge}"
 DASHBOARD_INTERVAL="${ALGE_DASHBOARD_INTERVAL:-2}"
+DASHBOARD_HEIGHT="${ALGE_DASHBOARD_HEIGHT:-5}"
 DASHBOARD_CMD="cd '${REPO_DIR}' && exec '${PYTHON}' cli.py dashboard --watch --interval '${DASHBOARD_INTERVAL}'"
 AGENT_CMD="cd '${REPO_DIR}' && ALGE_NO_BANNER=1 ALGE_TMUX_MANAGED=1 ALGE_TMUX_SESSION='${SESSION_NAME}' exec '${PYTHON}' cli.py agent"
 
 if ! tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
   tmux new-session -d -s "${SESSION_NAME}" -c "${REPO_DIR}" "${DASHBOARD_CMD}"
   tmux split-window -v -p 80 -t "${SESSION_NAME}:0.0" -c "${REPO_DIR}" "${AGENT_CMD}"
+  tmux resize-pane -t "${SESSION_NAME}:0.0" -y "${DASHBOARD_HEIGHT}"
   tmux select-pane -t "${SESSION_NAME}:0.1"
 fi
 

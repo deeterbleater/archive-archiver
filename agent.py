@@ -350,7 +350,7 @@ class ArchiveAgentShell(cmd.Cmd):
                     arguments = {}
                     result = {"ok": False, "error": f"invalid tool arguments: {exc}"}
                 else:
-                    terminal_theme.print_markup(f"[tool]agent[/tool] [highlight]{function.name}[/highlight]({arguments})")
+                    terminal_theme.print_tool_call(function.name, arguments)
                     self._touch_agent_activity(f"tool {function.name} running")
                     result = self.tools.execute(function.name, arguments)
                     self._touch_agent_activity(f"tool {function.name} returned")
