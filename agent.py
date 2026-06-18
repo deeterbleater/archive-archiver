@@ -26,6 +26,7 @@ SLASH_COMMANDS = {
     "/research": "research",
     "/download": "download",
     "/process": "process",
+    "/archive-raw": "archive_raw",
     "/cycle": "cycle",
     "/corpus": "corpus",
     "/memory": "memory",
@@ -231,6 +232,7 @@ Slash commands:
   /research TOPIC
   /download [--limit N] [--domain-workers]
   /process [--limit N]
+  /archive-raw [--limit N]
   /cycle [--query QUERY]
   /corpus NAME [--query TEXT]
   /memory [--limit N] [--search TEXT]
@@ -390,6 +392,16 @@ Slash commands:
             return
         self.cli.handle_process(self._namespace(**vars(args)))
 
+    def do_archive_raw(self, line):
+        """Upload processed raw originals to object storage: /archive-raw [--limit N]."""
+        parser = _parser("archive-raw")
+        parser.add_argument("--limit", type=int, default=self.config["process_limit"])
+        parser.add_argument("--keep-local", action="store_true")
+        args = self._run_parser(parser, line)
+        if not args:
+            return
+        self.cli.handle_archive_raw(self._namespace(**vars(args)))
+
     def do_cycle(self, line):
         """Run one discover-download-process cycle: cycle [--query QUERY] [--download-limit N]."""
         parser = _parser("cycle")
@@ -460,6 +472,8 @@ Commands:
       Download pending files into the raw bucket.
   /process [--limit N]
       Extract plaintext from downloaded files.
+  /archive-raw [--limit N] [--keep-local]
+      Upload processed raw originals to object storage and remove local copies.
   /cycle [--query QUERY] [--download-limit N] [--process-limit N]
       Run one discover-download-process cycle.
   /corpus NAME [--query TEXT] [--ordering title|hash|created|random]

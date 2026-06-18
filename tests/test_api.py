@@ -64,16 +64,20 @@ class ApiTests(unittest.TestCase):
         categories = self.api.category_breakdown()
         scans = self.api.scan_status()
         trust = self.api.trust_breakdown()
+        raw_archives = self.api.raw_archive_status()
 
         self.assertEqual(summary["total_works"], 1)
         self.assertEqual(summary["downloaded_bytes"], 12)
         self.assertEqual(summary["extracted_chars"], 42)
         self.assertEqual(summary["clean_scans"], 1)
         self.assertEqual(summary["quarantined_files"], 0)
+        self.assertEqual(summary["archived_raw_files"], 0)
+        self.assertEqual(summary["deleted_local_raw_files"], 0)
         self.assertEqual(sites[0]["site"], "example.org")
         self.assertEqual(categories[0]["category"], "philosophy")
         self.assertEqual(scans[0]["status"], "clean")
         self.assertEqual(trust[0]["trust_level"], "trusted")
+        self.assertEqual(raw_archives[0]["status"], "local")
 
     def test_work_drilldown(self):
         work_id = self._add_fixture()

@@ -107,6 +107,11 @@ def init_db():
     _ensure_column(cursor, "downloads", "scan_engine", "TEXT")
     _ensure_column(cursor, "downloads", "scan_signature", "TEXT")
     _ensure_column(cursor, "downloads", "quarantine_uri", "TEXT")
+    _ensure_column(cursor, "downloads", "raw_archive_uri", "TEXT")
+    _ensure_column(cursor, "downloads", "raw_archive_status", "TEXT")
+    _ensure_column(cursor, "downloads", "raw_archive_error", "TEXT")
+    _ensure_column(cursor, "downloads", "raw_archived_at", "TIMESTAMP")
+    _ensure_column(cursor, "downloads", "local_raw_deleted_at", "TIMESTAMP")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS corpus_specs (
@@ -261,6 +266,9 @@ def get_stats():
     cursor.execute("SELECT COALESCE(scan_status, 'unscanned'), COUNT(*) FROM downloads GROUP BY COALESCE(scan_status, 'unscanned')")
     scans_by_status = {row[0]: row[1] for row in cursor.fetchall()}
 
+    cursor.execute("SELECT COALESCE(raw_archive_status, 'local'), COUNT(*) FROM downloads GROUP BY COALESCE(raw_archive_status, 'local')")
+    raw_archives_by_status = {row[0]: row[1] for row in cursor.fetchall()}
+
     cursor.execute("SELECT COUNT(*) FROM corpus_builds")
     total_corpus_builds = cursor.fetchone()[0]
     
@@ -272,6 +280,7 @@ def get_stats():
         "downloads_by_status": downloads_by_status,
         "extractions_by_status": extractions_by_status,
         "scans_by_status": scans_by_status,
+        "raw_archives_by_status": raw_archives_by_status,
         "total_corpus_builds": total_corpus_builds,
     }
 
@@ -429,6 +438,38 @@ def get_pending_extractions(limit=10, extractor="plaintext.v1"):
     conn.close()
     return rows
 
+
+def get_raw_archive_candidates(limit=10):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        downloads.*,
+        files.work_id,
+        files.site,
+        files.format,
+        files.url,
+        files.download_url,
+        works.title,
+        works.author
+    FROM downloads
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    JOIN extractions ON extractions.download_id = downloads.id
+    WHERE
+        downloads.status = 'downloaded'
+        AND downloads.bucket_uri LIKE 'file:%'
+        AND downloads.raw_archive_uri IS NULL
+        AND downloads.local_raw_deleted_at IS NULL
+        AND extractions.status = 'processed'
+    GROUP BY downloads.id
+    ORDER BY downloads.id ASC
+    LIMIT ?
+    """, (limit,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
 def mark_extraction_started(download_id, extractor):
     """Creates or updates the extraction row when text processing starts."""
     conn = get_connection()
@@ -494,6 +535,39 @@ def mark_extraction_failed(download_id, extractor, error):
         updated_at = CURRENT_TIMESTAMP
     WHERE download_id = ? AND extractor = ?
     """, (str(error)[:1000], download_id, extractor))
+    conn.commit()
+    conn.close()
+
+
+def mark_raw_archive_succeeded(download_id, raw_archive_uri, delete_local=False):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE downloads
+    SET
+        raw_archive_uri = ?,
+        raw_archive_status = 'archived',
+        raw_archive_error = NULL,
+        raw_archived_at = CURRENT_TIMESTAMP,
+        local_raw_deleted_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE local_raw_deleted_at END,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+    """, (raw_archive_uri, 1 if delete_local else 0, download_id))
+    conn.commit()
+    conn.close()
+
+
+def mark_raw_archive_failed(download_id, error):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE downloads
+    SET
+        raw_archive_status = 'failed',
+        raw_archive_error = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+    """, (str(error)[:1000], download_id))
     conn.commit()
     conn.close()
 

@@ -75,7 +75,9 @@ def summary():
             COUNT(DISTINCT CASE WHEN downloads.scan_status = 'clean' THEN downloads.id END) AS clean_scans,
             COUNT(DISTINCT CASE WHEN downloads.scan_status = 'infected' THEN downloads.id END) AS infected_scans,
             COUNT(DISTINCT CASE WHEN downloads.scan_status = 'unavailable' THEN downloads.id END) AS unavailable_scans,
-            COUNT(DISTINCT CASE WHEN downloads.quarantine_uri IS NOT NULL THEN downloads.id END) AS quarantined_files
+            COUNT(DISTINCT CASE WHEN downloads.quarantine_uri IS NOT NULL THEN downloads.id END) AS quarantined_files,
+            COUNT(DISTINCT CASE WHEN downloads.raw_archive_status = 'archived' THEN downloads.id END) AS archived_raw_files,
+            COUNT(DISTINCT CASE WHEN downloads.local_raw_deleted_at IS NOT NULL THEN downloads.id END) AS deleted_local_raw_files
         FROM files
         LEFT JOIN downloads ON downloads.file_id = files.id
         LEFT JOIN extractions ON extractions.download_id = downloads.id
@@ -197,6 +199,16 @@ def scan_status():
     """)
 
 
+@app.get("/viz/status/raw-archives")
+def raw_archive_status():
+    return _rows("""
+        SELECT COALESCE(raw_archive_status, 'local') AS status, COUNT(*) AS count
+        FROM downloads
+        GROUP BY COALESCE(raw_archive_status, 'local')
+        ORDER BY count DESC
+    """)
+
+
 @app.get("/viz/timeseries/works")
 def works_timeseries(
     bucket: str = Query("day", pattern="^(day|hour)$"),
@@ -264,6 +276,9 @@ def recent_activity(limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)):
                 downloads.scan_engine,
                 downloads.scan_signature,
                 downloads.quarantine_uri,
+                downloads.raw_archive_status,
+                downloads.raw_archive_uri,
+                downloads.local_raw_deleted_at,
                 files.site,
                 files.format,
                 files.trust_level,
@@ -354,6 +369,9 @@ def get_work(work_id: int):
             downloads.scan_engine,
             downloads.scan_signature,
             downloads.quarantine_uri,
+            downloads.raw_archive_status,
+            downloads.raw_archive_uri,
+            downloads.local_raw_deleted_at,
             extractions.id AS extraction_id,
             extractions.status AS extraction_status,
             extractions.category,
@@ -413,6 +431,9 @@ def list_files(
             downloads.scan_engine,
             downloads.scan_signature,
             downloads.quarantine_uri,
+            downloads.raw_archive_status,
+            downloads.raw_archive_uri,
+            downloads.local_raw_deleted_at,
             COALESCE(extractions.status, 'pending') AS extraction_status,
             extractions.category,
             extractions.char_count
@@ -455,6 +476,7 @@ def dimensions():
         "formats": _rows("SELECT format, COUNT(*) AS count FROM files GROUP BY format ORDER BY count DESC"),
         "trust_levels": _rows("SELECT trust_level, COUNT(*) AS count FROM files GROUP BY trust_level ORDER BY count DESC"),
         "scan_statuses": _rows("SELECT COALESCE(scan_status, 'unscanned') AS status, COUNT(*) AS count FROM downloads GROUP BY COALESCE(scan_status, 'unscanned') ORDER BY count DESC"),
+        "raw_archive_statuses": _rows("SELECT COALESCE(raw_archive_status, 'local') AS status, COUNT(*) AS count FROM downloads GROUP BY COALESCE(raw_archive_status, 'local') ORDER BY count DESC"),
         "categories": _rows("""
             SELECT category, COUNT(*) AS count
             FROM extractions

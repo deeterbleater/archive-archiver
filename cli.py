@@ -346,6 +346,12 @@ def handle_status(args):
             print(f"  - {status}: {count}")
     else:
         print("  - none")
+    print("\nRaw Original Archives by Status:")
+    if stats.get("raw_archives_by_status"):
+        for status, count in stats["raw_archives_by_status"].items():
+            print(f"  - {status}: {count}")
+    else:
+        print("  - none")
     print(f"\nCorpus Builds: {stats['total_corpus_builds']}")
     print("=================================================")
 
@@ -440,6 +446,17 @@ def handle_process(args):
         print(f"{status}: {count}")
     print("=================================================")
 
+
+def handle_archive_raw(args):
+    results = processor.archive_processed_raws(
+        limit=args.limit,
+        delete_local=not args.keep_local,
+    )
+    print("\n=============== RAW ARCHIVE SUMMARY =============")
+    for status, count in results.items():
+        print(f"{status}: {count}")
+    print("=================================================")
+
 def handle_corpus(args):
     try:
         result = corpus.build_corpus(
@@ -522,6 +539,11 @@ def main():
     parser_process.add_argument("--bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
     parser_process.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
 
+    # Archive Raw Command
+    parser_archive_raw = subparsers.add_parser("archive-raw", help="Upload processed raw originals to S3-compatible object storage.")
+    parser_archive_raw.add_argument("--limit", type=int, default=10, help="Maximum processed raw downloads to archive.")
+    parser_archive_raw.add_argument("--keep-local", action="store_true", help="Keep local raw files after successful upload.")
+
     # Autonomous Collection Command
     parser_collect = subparsers.add_parser("collect", help="Autonomously discover, download, and process public works.")
     parser_collect.add_argument("--query", action="append", help="Additional query to include. Can be repeated.")
@@ -582,6 +604,8 @@ def main():
         handle_download(args)
     elif args.command == "process":
         handle_process(args)
+    elif args.command == "archive-raw":
+        handle_archive_raw(args)
     elif args.command == "collect":
         handle_collect(args)
     elif args.command == "corpus":

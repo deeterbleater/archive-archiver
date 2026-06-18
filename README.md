@@ -67,6 +67,16 @@ the raw bucket. Files discovered through `slum_archives` are marked
 `untrusted`; if `clamscan` is unavailable for an untrusted file, the download is
 left in quarantine and marked failed instead of entering `bucket/raw`.
 
+Archive processed raw originals to S3-compatible object storage:
+
+```sh
+python cli.py archive-raw --limit 50
+```
+
+Set `ARCHIVE_RAW_TO_S3=1` to run this automatically after successful plaintext
+extraction. S3 credentials are read from `~/.s3` by default, and
+`ARCHIVE_S3_BUCKET` selects the destination bucket.
+
 Process downloaded raw objects into plaintext:
 
 ```sh
@@ -188,6 +198,10 @@ By default, artifacts are written under `bucket/`, which is ignored by git:
 - `bucket/quarantine`: downloaded files awaiting or failing scan
 - `bucket/text`: extracted plaintext
 - `bucket/corpora`: corpus manifests and concatenated corpus text
+
+When raw-object S3 archival is enabled, local raw originals are uploaded after
+plaintext extraction and then deleted from `bucket/raw`; plaintext and corpus
+artifacts remain filesystem-backed.
 
 These are filesystem-backed buckets. The DB records object URIs and hashes so an S3, GCS, or R2 backend can replace the filesystem adapter later without changing the corpus manifest contract.
 

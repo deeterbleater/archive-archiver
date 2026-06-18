@@ -373,6 +373,24 @@ Run only text extraction:
 python cli.py process --limit 50
 ```
 
+Archive already-processed raw originals to S3-compatible object storage:
+
+```sh
+python cli.py archive-raw --limit 50
+```
+
+Raw object archival:
+
+- Enable automatic archival with `ARCHIVE_RAW_TO_S3=1`.
+- Credentials/config are read from `ARCHIVE_S3_CONFIG`, defaulting to
+  `/root/.s3`.
+- Destination bucket is `ARCHIVE_S3_BUCKET` or `ARCHIVE_RAW_OBJECT_BUCKET`.
+- Destination prefix defaults to `raw-originals`.
+- A raw file is uploaded only after plaintext extraction has succeeded.
+- The local raw file is deleted only after the upload succeeds.
+- SQLite records `raw_archive_uri`, `raw_archive_status`, `raw_archived_at`,
+  and `local_raw_deleted_at`.
+
 Build a corpus:
 
 ```sh

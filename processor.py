@@ -7,10 +7,12 @@ import urllib.parse
 from bs4 import BeautifulSoup
 
 import db
+import s3_storage
 
 
 EXTRACTOR_VERSION = "plaintext.v2"
 DEFAULT_TEXT_BUCKET_DIR = os.getenv("ARCHIVE_TEXT_BUCKET_DIR", "bucket/text")
+ARCHIVE_RAW_TO_S3 = os.getenv("ARCHIVE_RAW_TO_S3", "0").lower() in ("1", "true", "yes")
 
 
 class UnsupportedFormat(ValueError):
@@ -156,6 +158,27 @@ def process_download(row, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTO
     }
 
 
+def archive_raw_after_extraction(row, delete_local=True):
+    raw_path = _path_from_file_uri(row["bucket_uri"])
+    key = s3_storage.object_key(row.get("storage_key") or raw_path.name)
+    client = s3_storage.S3Client()
+    result = client.put_file(
+        raw_path,
+        key,
+        content_type=row.get("content_type"),
+        metadata={
+            "download-id": row.get("id"),
+            "file-id": row.get("file_id"),
+            "raw-sha256": row.get("sha256"),
+            "source-site": row.get("site"),
+        },
+    )
+    if delete_local:
+        raw_path.unlink(missing_ok=True)
+    db.mark_raw_archive_succeeded(row["id"], result["uri"], delete_local=delete_local)
+    return result
+
+
 def process_pending(limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_VERSION):
     rows = db.get_pending_extractions(limit=limit, extractor=extractor)
     results = {"processed": 0, "failed": 0, "skipped": 0}
@@ -167,6 +190,13 @@ def process_pending(limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTR
         try:
             metadata = process_download(row, bucket_dir=bucket_dir, extractor=extractor)
             db.mark_extraction_succeeded(download_id=download_id, extractor=extractor, **metadata)
+            if ARCHIVE_RAW_TO_S3 and not row.get("raw_archive_uri"):
+                try:
+                    archive = archive_raw_after_extraction(row, delete_local=True)
+                    print(f"    [+] Archived raw object to {archive['uri']} and removed local copy")
+                except Exception as archive_exc:
+                    db.mark_raw_archive_failed(download_id, archive_exc)
+                    print(f"    [!] Raw archive failed: {archive_exc}")
             results["processed"] += 1
             print(f"    [+] Extracted {metadata['char_count']} chars as {metadata['category']}")
         except UnsupportedFormat as exc:
@@ -178,4 +208,24 @@ def process_pending(limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTR
             results["failed"] += 1
             print(f"    [!] Extraction failed: {exc}")
 
+    return results
+
+
+def archive_processed_raws(limit=10, delete_local=True):
+    rows = db.get_raw_archive_candidates(limit=limit)
+    results = {"archived": 0, "failed": 0, "skipped": 0}
+    for row in rows:
+        print(f"[*] Archiving raw download {row['id']}: {row.get('title')} [{row.get('format')}]")
+        try:
+            archive = archive_raw_after_extraction(row, delete_local=delete_local)
+            results["archived"] += 1
+            print(f"    [+] Archived to {archive['uri']}")
+        except FileNotFoundError as exc:
+            db.mark_raw_archive_failed(row["id"], exc)
+            results["skipped"] += 1
+            print(f"    [-] Local raw missing: {exc}")
+        except Exception as exc:
+            db.mark_raw_archive_failed(row["id"], exc)
+            results["failed"] += 1
+            print(f"    [!] Raw archive failed: {exc}")
     return results
