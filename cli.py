@@ -10,12 +10,14 @@ def print(*args, **kwargs):
     kwargs.setdefault('flush', True)
     builtins.print(*args, **kwargs)
 
+# Load dotenv before module-level CLI defaults read environment variables.
+load_dotenv()
+
 import db
 import scrapers
 import llm
-
-# Load dotenv to read OPENROUTER_API_KEY
-load_dotenv()
+import downloader
+import processor
 
 def print_banner():
     print("=========================================")
@@ -256,6 +258,42 @@ def handle_status(args):
     print("\nFiles Logged per Site/Domain:")
     for site, count in stats["files_by_site"].items():
         print(f"  - {site}: {count} files")
+    print("\nDownload Jobs by Status:")
+    if stats["downloads_by_status"]:
+        for status, count in stats["downloads_by_status"].items():
+            print(f"  - {status}: {count}")
+    else:
+        print("  - none")
+    print("\nPlaintext Extractions by Status:")
+    if stats["extractions_by_status"]:
+        for status, count in stats["extractions_by_status"].items():
+            print(f"  - {status}: {count}")
+    else:
+        print("  - none")
+    print("=================================================")
+
+def handle_download(args):
+    max_bytes = args.max_mb * 1024 * 1024 if args.max_mb else None
+    results = downloader.download_pending(
+        limit=args.limit,
+        bucket_dir=args.bucket_dir,
+        requests_per_second=args.rps,
+        max_bytes=max_bytes,
+    )
+    print("\n================ DOWNLOAD SUMMARY ===============")
+    for status, count in results.items():
+        print(f"{status}: {count}")
+    print("=================================================")
+
+def handle_process(args):
+    results = processor.process_pending(
+        limit=args.limit,
+        bucket_dir=args.bucket_dir,
+        extractor=args.extractor,
+    )
+    print("\n=============== PROCESSING SUMMARY ==============")
+    for status, count in results.items():
+        print(f"{status}: {count}")
     print("=================================================")
 
 def main():
@@ -282,6 +320,19 @@ def main():
     
     # Status Command
     subparsers.add_parser("status", help="Show database crawler statistics.")
+
+    # Download Command
+    parser_download = subparsers.add_parser("download", help="Download logged files into the raw object bucket.")
+    parser_download.add_argument("--limit", type=int, default=10, help="Maximum files to download in this run.")
+    parser_download.add_argument("--bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR, help="Filesystem-backed raw bucket directory.")
+    parser_download.add_argument("--rps", type=float, default=0.2, help="Per-host requests per second. Default is 0.2, or one request every five seconds.")
+    parser_download.add_argument("--max-mb", type=int, default=250, help="Maximum size per file in MB. Use 0 for no limit.")
+
+    # Process Command
+    parser_process = subparsers.add_parser("process", help="Extract plaintext from downloaded raw objects.")
+    parser_process.add_argument("--limit", type=int, default=10, help="Maximum downloads to process in this run.")
+    parser_process.add_argument("--bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
+    parser_process.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
     
     args = parser.parse_args()
     print_banner()
@@ -294,6 +345,10 @@ def main():
         handle_url(args)
     elif args.command == "status":
         handle_status(args)
+    elif args.command == "download":
+        handle_download(args)
+    elif args.command == "process":
+        handle_process(args)
 
 if __name__ == "__main__":
     main()

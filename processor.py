@@ -1,0 +1,144 @@
+import hashlib
+import os
+from pathlib import Path
+import re
+import urllib.parse
+
+from bs4 import BeautifulSoup
+
+import db
+
+
+EXTRACTOR_VERSION = "plaintext.v1"
+DEFAULT_TEXT_BUCKET_DIR = os.getenv("ARCHIVE_TEXT_BUCKET_DIR", "bucket/text")
+
+
+class UnsupportedFormat(ValueError):
+    pass
+
+
+def _safe_segment(value, fallback="unknown"):
+    value = str(value or fallback).strip().lower()
+    value = re.sub(r"[^a-z0-9._-]+", "-", value)
+    value = value.strip(".-")
+    return value[:96] or fallback
+
+
+def _path_from_file_uri(uri):
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme != "file":
+        raise UnsupportedFormat(f"only file:// bucket URIs are supported by {EXTRACTOR_VERSION}")
+    return Path(urllib.parse.unquote(parsed.path))
+
+
+def _decode_bytes(raw):
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _normalize_text(text):
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def extract_plaintext(path, content_type=None, format_hint=None):
+    suffix = path.suffix.lower()
+    hint = f"{content_type or ''} {format_hint or ''}".lower()
+    raw = path.read_bytes()
+
+    if suffix in (".html", ".htm", ".xml") or "html" in hint:
+        soup = BeautifulSoup(raw, "html.parser")
+        for node in soup(["script", "style", "meta", "noscript"]):
+            node.decompose()
+        return _normalize_text(soup.get_text(separator="\n", strip=True)), "html"
+
+    if suffix in (".txt", ".text", ".md", ".json", ".csv") or "text" in hint:
+        return _normalize_text(_decode_bytes(raw)), "text"
+
+    raise UnsupportedFormat(f"unsupported plaintext extractor format: {suffix or format_hint or content_type}")
+
+
+def categorize_text(row, text):
+    haystack = " ".join([
+        str(row.get("title") or ""),
+        str(row.get("author") or ""),
+        str(row.get("site") or ""),
+        text[:5000],
+    ]).lower()
+
+    categories = [
+        ("egoism", ("egoist", "egoism", "stirner")),
+        ("anarchism", ("anarchist", "anarchism", "libertarian communism")),
+        ("philosophy", ("philosophy", "metaphysics", "ethics", "epistemology")),
+        ("political_economy", ("capital", "labor", "property", "economics")),
+        ("history", ("history", "century", "revolution", "war")),
+        ("literature", ("novel", "poem", "fiction", "drama")),
+    ]
+
+    for category, needles in categories:
+        if any(needle in haystack for needle in needles):
+            return category
+    return "uncategorized"
+
+
+def _text_storage_key(row, text_sha256):
+    site = _safe_segment(row.get("site"))
+    work_id = _safe_segment(row.get("work_id"), "work")
+    download_id = _safe_segment(row.get("id"), "download")
+    return f"{site}/{work_id}/{download_id}/{text_sha256[:16]}.txt"
+
+
+def process_download(row, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_VERSION):
+    raw_path = _path_from_file_uri(row["bucket_uri"])
+    text, mode = extract_plaintext(
+        raw_path,
+        content_type=row.get("content_type"),
+        format_hint=row.get("format"),
+    )
+    if not text:
+        raise UnsupportedFormat("extractor produced empty text")
+
+    text_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    storage_key = _text_storage_key(row, text_sha256)
+    final_path = Path(bucket_dir) / storage_key
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    final_path.write_text(text + "\n", encoding="utf-8")
+
+    return {
+        "text_uri": final_path.resolve().as_uri(),
+        "text_sha256": text_sha256,
+        "char_count": len(text),
+        "category": categorize_text(row, text),
+        "warnings": f"extractor_mode={mode}",
+    }
+
+
+def process_pending(limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_VERSION):
+    rows = db.get_pending_extractions(limit=limit, extractor=extractor)
+    results = {"processed": 0, "failed": 0, "skipped": 0}
+
+    for row in rows:
+        download_id = row["id"]
+        print(f"[*] Processing download {download_id}: {row.get('title')} [{row.get('format')}]")
+        db.mark_extraction_started(download_id, extractor)
+        try:
+            metadata = process_download(row, bucket_dir=bucket_dir, extractor=extractor)
+            db.mark_extraction_succeeded(download_id=download_id, extractor=extractor, **metadata)
+            results["processed"] += 1
+            print(f"    [+] Extracted {metadata['char_count']} chars as {metadata['category']}")
+        except UnsupportedFormat as exc:
+            db.mark_extraction_skipped(download_id, extractor, exc)
+            results["skipped"] += 1
+            print(f"    [-] Skipped: {exc}")
+        except Exception as exc:
+            db.mark_extraction_failed(download_id, extractor, exc)
+            results["failed"] += 1
+            print(f"    [!] Extraction failed: {exc}")
+
+    return results
