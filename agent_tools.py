@@ -316,7 +316,18 @@ class AppToolRunner:
             return {"ok": False, "error": f"unknown tool: {name}"}
         try:
             with _tool_timeout(name):
-                return handlers[name](**(arguments or {}))
+                result = handlers[name](**(arguments or {}))
+            if hasattr(self.shell, "_log_agent_status"):
+                phase = "end" if result.get("ok", True) else "error"
+                detail = "finished" if result.get("ok", True) else result.get("error", "returned an error")
+                self.shell._log_agent_status(
+                    f"Tool {name} {detail}.",
+                    loop_kind="tool",
+                    phase=phase,
+                )
+            status = "success" if result.get("ok", True) else "failed"
+            terminal_theme.print_pip(status, f"tool {name} {'complete' if result.get('ok', True) else 'failed'}")
+            return result
         except ToolTimeoutError as exc:
             timeout_seconds = TOOL_TIMEOUTS.get(name)
             message = f"{name} did not finish within {timeout_seconds}s; the operation was stopped so the agent can continue."
@@ -343,8 +354,11 @@ class AppToolRunner:
                 phase="error",
             )
 
+    def _tool_output_target(self):
+        return getattr(self.shell, "stdout", None) or sys.__stdout__
+
     def _capture(self, func, args):
-        output = io.StringIO()
+        output = TeeCapture(self._tool_output_target())
         with contextlib.redirect_stdout(output):
             func(args)
         return output.getvalue()
@@ -471,7 +485,7 @@ class AppToolRunner:
             f"[tool]search[/tool] [muted]query[/muted] [highlight]{query}[/highlight] "
             f"[muted]sources[/muted] {', '.join(selected_sources)}"
         )
-        output = TeeCapture(getattr(self.shell, "stdout", None) or sys.__stdout__)
+        output = TeeCapture(self._tool_output_target())
         with contextlib.redirect_stdout(output):
             self.shell.cli.perform_crawl(
                 query,

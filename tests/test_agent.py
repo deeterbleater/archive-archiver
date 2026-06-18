@@ -225,6 +225,28 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertIn("crawl started for egoism", visible_output.getvalue())
         self.assertIn("sources: archive_org", visible_output.getvalue())
 
+    def test_cli_backed_tool_capture_streams_visible_output(self):
+        visible_output = io.StringIO()
+        self.shell.stdout = visible_output
+
+        def fake_handler(_args):
+            print("direct url analysis started")
+            print("direct url analysis finished")
+
+        output = self.shell.tools._capture(fake_handler, self.shell._namespace())
+
+        self.assertIn("direct url analysis started", output)
+        self.assertIn("direct url analysis finished", output)
+        self.assertIn("direct url analysis started", visible_output.getvalue())
+        self.assertIn("direct url analysis finished", visible_output.getvalue())
+
+    def test_tool_execute_prints_completion_line(self):
+        with agent_tools.terminal_theme.console.capture() as capture:
+            result = self.shell.tools.execute("backlog", {})
+
+        self.assertTrue(result["ok"])
+        self.assertIn("tool backlog complete", capture.get())
+
     def test_goal_idle_watchdog_logs_idle_status(self):
         original_warning_seconds = agent.IDLE_WARNING_SECONDS
         original_interval = agent.IDLE_WATCHDOG_INTERVAL_SECONDS

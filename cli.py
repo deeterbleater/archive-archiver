@@ -195,6 +195,8 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
             except ValueError as ve:
                 print(f"      [!] LLM skipped: {ve}")
                 parsed_data = None
+            else:
+                print("      [+] OpenRouter analysis returned.")
             
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -239,6 +241,8 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
             except ValueError as ve:
                 print(f"      [!] LLM skipped: {ve}")
                 parsed_data = None
+            else:
+                print("      [+] OpenRouter analysis returned.")
             
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -283,6 +287,8 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
             except ValueError as ve:
                 print(f"      [!] LLM skipped: {ve}")
                 parsed_data = None
+            else:
+                print("      [+] OpenRouter analysis returned.")
 
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -330,6 +336,8 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
             except ValueError as ve:
                 print(f"      [!] LLM skipped: {ve}")
                 parsed_data = None
+            else:
+                print("      [+] OpenRouter analysis returned.")
 
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -392,6 +400,8 @@ def handle_research(args):
     except ValueError as ve:
         print(f"[!] LLM failed to generate report: {ve}")
         sys.exit(1)
+    else:
+        print("[+] Research report synthesis returned.")
         
     if not report:
         print("[!] Failed to generate report.")
@@ -425,6 +435,8 @@ def handle_url(args):
     except ValueError as ve:
         print(f"[!] LLM failed: {ve}")
         sys.exit(1)
+    else:
+        print("[+] OpenRouter analysis returned.")
     
     if not parsed_data or not parsed_data.get("title"):
         print("[!] Failed to parse or extract structured data from page.")
