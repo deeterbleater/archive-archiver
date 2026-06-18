@@ -4,6 +4,7 @@ import re
 import urllib.parse
 import time
 import random
+import xml.etree.ElementTree as ET
 
 
 SLUM_ARCHIVE_MIRRORS = [
@@ -175,6 +176,74 @@ def get_archive_org_files(identifier):
         print(f"[!] Error fetching Archive.org metadata for {identifier}: {e}")
     return []
 
+
+def search_arxiv(query, max_results=10):
+    """
+    Searches arXiv using its public Atom API and returns paper metadata with PDF links.
+    """
+    url = "https://export.arxiv.org/api/query"
+    params = {
+        "search_query": f"all:{query}",
+        "start": 0,
+        "max_results": max_results,
+        "sortBy": "relevance",
+        "sortOrder": "descending",
+    }
+    try:
+        response = requests.get(url, params=params, headers=get_headers(), timeout=20)
+        response.raise_for_status()
+    except Exception as exc:
+        print(f"[!] Error searching arXiv: {exc}")
+        return []
+
+    return parse_arxiv_feed(response.text)
+
+
+def parse_arxiv_feed(xml_text):
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        print(f"[!] Error parsing arXiv feed: {exc}")
+        return []
+
+    results = []
+    for entry in root.findall("atom:entry", ns):
+        entry_id = (entry.findtext("atom:id", default="", namespaces=ns) or "").strip()
+        title = re.sub(r"\s+", " ", entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
+        summary = re.sub(r"\s+", " ", entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
+        authors = [
+            re.sub(r"\s+", " ", author.findtext("atom:name", default="", namespaces=ns) or "").strip()
+            for author in entry.findall("atom:author", ns)
+        ]
+        authors = [author for author in authors if author]
+        pdf_url = None
+        detail_url = entry_id
+        for link in entry.findall("atom:link", ns):
+            href = link.attrib.get("href")
+            if not href:
+                continue
+            if link.attrib.get("title") == "pdf" or link.attrib.get("type") == "application/pdf":
+                pdf_url = href
+            elif link.attrib.get("rel") == "alternate":
+                detail_url = href
+        if not pdf_url and "/abs/" in entry_id:
+            pdf_url = entry_id.replace("/abs/", "/pdf/")
+        if not title or not pdf_url:
+            continue
+        results.append({
+            "title": title,
+            "author": ", ".join(authors) if authors else "Unknown",
+            "summary": summary,
+            "site": "arxiv.org",
+            "format": "PDF",
+            "url": detail_url,
+            "file_size": "Unknown",
+            "download_source": "arXiv PDF",
+            "download_url": pdf_url,
+        })
+    return results
+
 def search_anarchist_library(query):
     """
     Searches The Anarchist Library and returns a list of title/url dicts.
@@ -234,6 +303,183 @@ def search_annas_archive(query, mirror="https://annas-archive.li"):
                 })
                 
     return results[:10]
+
+
+def search_substack(query):
+    """
+    Searches Substack and returns post URLs.
+    Substack markup changes frequently, so this intentionally extracts only
+    stable public post URLs and lets the downstream HTML processor handle text.
+    If the query contains a Substack publication URL, the publication RSS feed
+    is used because it is stable and does not depend on Substack's JS app.
+    """
+    publication_url = _substack_publication_url(query)
+    if publication_url:
+        return search_substack_publication(publication_url)
+
+    api_url = "https://substack.com/api/v1/post/search"
+    try:
+        response = requests.get(
+            api_url,
+            params={"query": query, "limit": 10},
+            headers={**get_headers(), "Accept": "application/json"},
+            timeout=15,
+        )
+        if response.status_code == 200:
+            rows = parse_substack_json(response.json(), query=query)
+            if rows:
+                return rows
+    except Exception as exc:
+        print(f"[!] Error searching Substack JSON endpoint: {exc}")
+
+    search_url = f"https://substack.com/search/{urllib.parse.quote(query)}"
+    html = fetch_url(search_url, retries=2, delay=0.5)
+    if not html:
+        return []
+    return parse_substack_search(html, search_url, query=query)
+
+
+def _substack_publication_url(query):
+    query = str(query or "").strip()
+    if query.startswith("substack:"):
+        query = query.split(":", 1)[1].strip()
+    match = re.search(r"https?://[A-Za-z0-9.-]*substack\.com(?:/[^\s]*)?", query)
+    if not match:
+        return None
+    parsed = urllib.parse.urlparse(match.group(0))
+    if not parsed.netloc.lower().endswith("substack.com"):
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def parse_substack_json(payload, query=None):
+    rows = []
+    seen = set()
+    candidates = []
+    for key in ("focused", "results", "resultsWithTrackingParams"):
+        value = payload.get(key) if isinstance(payload, dict) else None
+        if isinstance(value, list):
+            candidates.extend(value)
+
+    for item in candidates:
+        post = item.get("post") if isinstance(item, dict) else None
+        post = post or item
+        if not isinstance(post, dict):
+            continue
+        url = post.get("canonical_url") or post.get("url") or post.get("web_url")
+        if not url:
+            publication = post.get("publication") or {}
+            subdomain = publication.get("subdomain")
+            slug = post.get("slug")
+            if subdomain and slug:
+                url = f"https://{subdomain}.substack.com/p/{slug}"
+        if not url or url in seen:
+            continue
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or "substack.com" not in parsed.netloc:
+            continue
+        seen.add(url)
+        rows.append({
+            "title": post.get("title") or post.get("subtitle") or url,
+            "author": ((post.get("publishedBylines") or [{}])[0].get("name") if isinstance(post.get("publishedBylines"), list) else None),
+            "site": parsed.netloc,
+            "format": "HTML",
+            "url": url,
+            "file_size": "Unknown",
+            "download_source": "Substack HTML",
+            "download_url": url,
+        })
+    return rows
+
+
+def search_substack_publication(publication_url):
+    feed_url = urllib.parse.urljoin(publication_url.rstrip("/") + "/", "feed")
+    try:
+        response = requests.get(feed_url, headers=get_headers(), timeout=15)
+        response.raise_for_status()
+    except Exception as exc:
+        print(f"[!] Error fetching Substack feed {feed_url}: {exc}")
+        return []
+    return parse_substack_feed(response.text, publication_url)
+
+
+def parse_substack_feed(xml_text, publication_url):
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        print(f"[!] Error parsing Substack feed: {exc}")
+        return []
+
+    channel = root.find("channel")
+    if channel is None:
+        return []
+    site = urllib.parse.urlparse(publication_url).netloc
+    rows = []
+    for item in channel.findall("item"):
+        title = re.sub(r"\s+", " ", item.findtext("title", default="")).strip()
+        link = (item.findtext("link", default="") or "").strip()
+        author = (item.findtext("{http://purl.org/dc/elements/1.1/}creator", default="") or "").strip()
+        if not title or not link:
+            continue
+        rows.append({
+            "title": title,
+            "author": author or None,
+            "site": site,
+            "format": "HTML",
+            "url": link,
+            "file_size": "Unknown",
+            "download_source": "Substack RSS HTML",
+            "download_url": link,
+        })
+        if len(rows) >= 10:
+            break
+    return rows
+
+
+def parse_substack_search(html, base_url="https://substack.com/search", query=None):
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    seen = set()
+    terms = [term.lower() for term in re.findall(r"[A-Za-z0-9]{4,}", query or "")[:5]]
+
+    for a in soup.find_all("a"):
+        href = a.get("href") or a.get("data-href")
+        if not href:
+            continue
+        full_url = urllib.parse.urljoin(base_url, href)
+        parsed = urllib.parse.urlparse(full_url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+
+        host = parsed.netloc.lower()
+        path = parsed.path
+        is_post = (
+            host.endswith(".substack.com") and "/p/" in path
+        ) or (
+            host == "substack.com" and re.search(r"/@[^/]+/p/", path)
+        )
+        if not is_post or full_url in seen:
+            continue
+
+        text = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
+        if terms and text and not any(term in text.lower() or term in full_url.lower() for term in terms):
+            continue
+
+        seen.add(full_url)
+        results.append({
+            "title": text or full_url,
+            "author": None,
+            "site": host,
+            "format": "HTML",
+            "url": full_url,
+            "file_size": "Unknown",
+            "download_source": "Substack HTML",
+            "download_url": full_url,
+        })
+        if len(results) >= 10:
+            break
+
+    return results
 
 
 def _candidate_search_urls(mirror, query):

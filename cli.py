@@ -35,8 +35,8 @@ PUBLIC_COLLECTOR_QUERIES = [
     "ethics public domain",
 ]
 
-DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library")
-ALL_SOURCES = ("archive_org", "anarchist_library", "annas_archive", "slum_archives")
+DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack")
+ALL_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack", "annas_archive", "slum_archives")
 
 def print_banner():
     print("=========================================")
@@ -77,7 +77,51 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
                     )
                 print(f"      [+] Logged {len(files)} versions/files for this work.")
             
-    # 2. THE ANARCHIST LIBRARY SEARCH
+    # 2. ARXIV SEARCH
+    if "arxiv" in sources:
+        print("\n[*] Querying arXiv API...")
+        arxiv_results = scrapers.search_arxiv(query, max_results=max_results)
+        print(f"[+] Found {len(arxiv_results)} matching papers on arXiv. Processing top {max_results}...")
+        for paper in arxiv_results[:max_results]:
+            work_id = db.add_work(
+                title=paper["title"],
+                author=paper.get("author"),
+                search_query=query,
+            )
+            db.add_file(
+                work_id=work_id,
+                site=paper["site"],
+                format=paper["format"],
+                url=paper["url"],
+                file_size=paper["file_size"],
+                download_source=paper["download_source"],
+                download_url=paper["download_url"],
+            )
+            print(f"      [+] Logged arXiv paper: '{paper['title']}'")
+
+    # 3. SUBSTACK SEARCH
+    if "substack" in sources:
+        print("\n[*] Querying Substack search...")
+        substack_results = scrapers.search_substack(query)
+        print(f"[+] Found {len(substack_results)} matching Substack posts. Processing top {max_results}...")
+        for post in substack_results[:max_results]:
+            work_id = db.add_work(
+                title=post["title"],
+                author=post.get("author"),
+                search_query=query,
+            )
+            db.add_file(
+                work_id=work_id,
+                site=post["site"],
+                format=post["format"],
+                url=post["url"],
+                file_size=post["file_size"],
+                download_source=post["download_source"],
+                download_url=post["download_url"],
+            )
+            print(f"      [+] Logged Substack post: '{post['title']}'")
+
+    # 4. THE ANARCHIST LIBRARY SEARCH
     if "anarchist_library" in sources:
         print("\n[*] Querying The Anarchist Library...")
         al_results = scrapers.search_anarchist_library(query)
@@ -122,7 +166,7 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
             else:
                 print("      [!] LLM failed to parse or extract structure.")
             
-    # 3. ANNA'S ARCHIVE SEARCH
+    # 5. ANNA'S ARCHIVE SEARCH
     if "annas_archive" in sources:
         print("\n[*] Querying Anna's Archive...")
         annas_results = scrapers.search_annas_archive(query)
@@ -166,7 +210,7 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
             else:
                 print("      [!] LLM failed to parse or extract structure.")
 
-    # 4. OPEN-SLUM MIRROR SET
+    # 6. OPEN-SLUM MIRROR SET
     if "slum_archives" in sources:
         print("\n[*] Querying Open SLUM mirror set...")
         slum_results = scrapers.search_slum_archives(query)

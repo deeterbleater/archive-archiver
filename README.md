@@ -37,6 +37,8 @@ Search archive sources and log discovered works/files:
 
 ```sh
 python cli.py search "max stirner" --max-results 3
+python cli.py search "mutual aid" --sources arxiv substack --max-results 5
+python cli.py search "substack:https://example.substack.com" --sources substack --max-results 5
 ```
 
 Run the broader research coordinator:
@@ -50,6 +52,11 @@ Query the less-trusted Open SLUM mirror set:
 ```sh
 python cli.py search "political economy" --sources slum_archives --max-results 2
 ```
+
+`arxiv` uses the public arXiv Atom API and logs PDF rows directly. `substack`
+uses public Substack search results when available and can ingest a known
+publication feed when the query contains `substack:https://name.substack.com`;
+Substack rows are logged as HTML for the existing downloader/extractor.
 
 `slum_archives` covers the mirrors listed by `https://open-slum.org/`,
 including Anna's Archive mirrors, Libgen+ mirrors, Z-Library/info mirrors,
@@ -165,7 +172,7 @@ Common slash commands include:
 /config
 /model
 /model qwen/qwen3.7-plus
-/set sources archive_org anarchist_library
+/set sources archive_org anarchist_library arxiv substack
 /search "max stirner" --max-results 3
 /download --limit 10 --domain-workers
 /process --limit 10

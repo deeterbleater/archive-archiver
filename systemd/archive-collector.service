@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/root/archive-archiver
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py --max-results 2 collect --sleep-seconds 21600 --download-limit 50 --process-limit 50 --max-domains 4 --per-domain-limit 3 --rps 0.05 --sources archive_org anarchist_library
+ExecStart=/root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py --max-results 2 collect --sleep-seconds 21600 --download-limit 50 --process-limit 50 --max-domains 4 --per-domain-limit 3 --rps 0.05 --sources archive_org anarchist_library arxiv substack
 Restart=always
 RestartSec=60
 StandardOutput=append:/root/archive-archiver/logs/collector.log

@@ -424,7 +424,7 @@ class ArchiveAgentShell(cmd.Cmd):
             print(f"[+] model updated: {selected} (context {context_length})")
 
     def do_set(self, line):
-        """Set a session default: /set model MODEL | /set max-results N | /set sources archive_org anarchist_library."""
+        """Set a session default: /set model MODEL | /set max-results N | /set sources archive_org anarchist_library arxiv substack."""
         argv = _split(line)
         if argv is None:
             return
@@ -712,7 +712,7 @@ Commands:
       Fetch OpenRouter models and choose the active chat/model-extraction model.
   /set model MODEL
   /set max-results N
-  /set sources archive_org anarchist_library
+  /set sources archive_org anarchist_library arxiv substack
   /set rps N
       Update session defaults.
   /set memory-path PATH
