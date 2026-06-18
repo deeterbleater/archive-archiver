@@ -1,0 +1,13 @@
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Local Database
+archive_works.db
+
+# API keys and secrets
+.env
+
+# MacOS files
+.DS_Store
