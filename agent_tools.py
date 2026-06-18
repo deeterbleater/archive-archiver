@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import sys
 import threading
 from types import SimpleNamespace
 import urllib.parse
@@ -15,13 +16,14 @@ import downloader
 import goals
 import processor
 import requests
+import terminal_theme
 from bs4 import BeautifulSoup
 
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = int(os.getenv("ALGE_TOOL_TIMEOUT_SECONDS", "180"))
 TOOL_TIMEOUTS = {
     "web_search": int(os.getenv("ALGE_WEB_SEARCH_TIMEOUT_SECONDS", "45")),
-    "search": int(os.getenv("ALGE_SEARCH_TIMEOUT_SECONDS", str(DEFAULT_TOOL_TIMEOUT_SECONDS))),
+    "search": int(os.getenv("ALGE_SEARCH_TIMEOUT_SECONDS", "90")),
     "ingest_url": int(os.getenv("ALGE_INGEST_URL_TIMEOUT_SECONDS", str(DEFAULT_TOOL_TIMEOUT_SECONDS))),
     "research": int(os.getenv("ALGE_RESEARCH_TIMEOUT_SECONDS", "240")),
 }
@@ -29,6 +31,23 @@ TOOL_TIMEOUTS = {
 
 class ToolTimeoutError(TimeoutError):
     pass
+
+
+class TeeCapture(io.StringIO):
+    def __init__(self, target):
+        super().__init__()
+        self.target = target
+
+    def write(self, text):
+        if self.target:
+            self.target.write(text)
+            self.target.flush()
+        return super().write(text)
+
+    def flush(self):
+        if self.target:
+            self.target.flush()
+        return super().flush()
 
 
 @contextlib.contextmanager
@@ -441,13 +460,24 @@ class AppToolRunner:
         return {"ok": True, "engine": "duckduckgo", "query": query, "results": results}
 
     def search(self, query, max_results=None, sources=None):
-        output = io.StringIO()
+        selected_sources = sources or self.shell.config["sources"]
+        if hasattr(self.shell, "_log_agent_status"):
+            self.shell._log_agent_status(
+                f"Searching archive sources for '{query}' across {', '.join(selected_sources)}.",
+                loop_kind="tool",
+                phase="start",
+            )
+        terminal_theme.print_markup(
+            f"[tool]search[/tool] [muted]query[/muted] [highlight]{query}[/highlight] "
+            f"[muted]sources[/muted] {', '.join(selected_sources)}"
+        )
+        output = TeeCapture(getattr(self.shell, "stdout", None) or sys.__stdout__)
         with contextlib.redirect_stdout(output):
             self.shell.cli.perform_crawl(
                 query,
                 self.shell.config["model"],
                 max_results or self.shell.config["max_results"],
-                sources=sources or self.shell.config["sources"],
+                sources=selected_sources,
                 should_stop=getattr(self.shell, "_goal_should_stop", None),
             )
         output = output.getvalue()

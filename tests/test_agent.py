@@ -209,6 +209,22 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(latest["phase"], "error")
         self.assertIn("Tool search failed", latest["message"])
 
+    def test_search_tool_streams_and_captures_crawl_output(self):
+        visible_output = io.StringIO()
+        self.shell.stdout = visible_output
+
+        def fake_crawl(query, model, max_results, sources, should_stop=None):
+            print(f"crawl started for {query}")
+            print(f"sources: {', '.join(sources)}")
+
+        with mock.patch.object(self.shell.cli, "perform_crawl", side_effect=fake_crawl):
+            result = self.shell.tools.search("egoism", max_results=1, sources=["archive_org"])
+
+        self.assertTrue(result["ok"])
+        self.assertIn("crawl started for egoism", result["output"])
+        self.assertIn("crawl started for egoism", visible_output.getvalue())
+        self.assertIn("sources: archive_org", visible_output.getvalue())
+
     def test_goal_idle_watchdog_logs_idle_status(self):
         original_warning_seconds = agent.IDLE_WARNING_SECONDS
         original_interval = agent.IDLE_WATCHDOG_INTERVAL_SECONDS
