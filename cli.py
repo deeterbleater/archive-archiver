@@ -38,10 +38,15 @@ PUBLIC_COLLECTOR_QUERIES = [
 DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack")
 ALL_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack", "annas_archive", "slum_archives")
 
+BANNER = """░░      ░░░  ░░░░░░░░░      ░░░        ░░░░░░░
+▒  ▒▒▒▒  ▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒
+▓  ▓▓▓▓  ▓▓  ▓▓▓▓▓▓▓▓  ▓▓▓   ▓▓      ▓▓▓▓▓▓▓▓▓
+█        ██  ████████  ████  ██  █████████████
+█  ████  ██        ███      ███        ███████
+____Agentic Lexicon Generation Engine____0.1__"""
+
 def print_banner():
-    print("=========================================")
-    print("      Archive Crawler & LLM Analyzer     ")
-    print("=========================================")
+    print(BANNER)
 
 def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
     sources = set(sources)
