@@ -1,9 +1,44 @@
+import json
 import os
+import re
 import sqlite3
 
 import file_selection
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "archive_works.db")
+
+DEFAULT_CATEGORIES = [
+    {
+        "name": "egoism",
+        "description": "Egoist and Stirnerite texts.",
+        "keywords": ["egoist", "egoism", "stirner"],
+    },
+    {
+        "name": "anarchism",
+        "description": "Anarchist and libertarian socialist texts.",
+        "keywords": ["anarchist", "anarchism", "libertarian communism"],
+    },
+    {
+        "name": "philosophy",
+        "description": "General philosophy, metaphysics, ethics, and epistemology.",
+        "keywords": ["philosophy", "metaphysics", "ethics", "epistemology"],
+    },
+    {
+        "name": "political_economy",
+        "description": "Economics, labor, property, capital, and production.",
+        "keywords": ["capital", "labor", "property", "economics"],
+    },
+    {
+        "name": "history",
+        "description": "Historical analysis and accounts.",
+        "keywords": ["history", "century", "revolution", "war"],
+    },
+    {
+        "name": "literature",
+        "description": "Fiction, poetry, drama, and literary works.",
+        "keywords": ["novel", "poem", "fiction", "drama"],
+    },
+]
 
 def get_connection():
     """Returns a connection to the SQLite database."""
@@ -17,6 +52,11 @@ def _ensure_column(cursor, table, column, definition):
     existing = {row[1] for row in cursor.fetchall()}
     if column not in existing:
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _category_name(value):
+    name = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+    return name or "uncategorized"
 
 def init_db():
     """Initializes the SQLite database tables."""
@@ -101,6 +141,17 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS categories (
+        name TEXT PRIMARY KEY,
+        description TEXT,
+        keywords_json TEXT NOT NULL DEFAULT '[]',
+        dynamic INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     _ensure_column(cursor, "downloads", "final_url", "TEXT")
     _ensure_column(cursor, "downloads", "etag", "TEXT")
     _ensure_column(cursor, "downloads", "last_modified", "TEXT")
@@ -165,9 +216,92 @@ def init_db():
     INSERT OR IGNORE INTO schema_migrations(version)
     VALUES ('001_manifest_download_process_corpus')
     """)
+
+    for category in DEFAULT_CATEGORIES:
+        cursor.execute("""
+        INSERT INTO categories (name, description, keywords_json, dynamic)
+        VALUES (?, ?, ?, 0)
+        ON CONFLICT(name) DO UPDATE SET
+            description = COALESCE(categories.description, excluded.description),
+            keywords_json = CASE
+                WHEN categories.keywords_json IS NULL OR categories.keywords_json = '[]'
+                THEN excluded.keywords_json
+                ELSE categories.keywords_json
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        """, (
+            category["name"],
+            category["description"],
+            json.dumps(category["keywords"], sort_keys=True),
+        ))
     
     conn.commit()
     conn.close()
+
+
+def ensure_category(name, description=None, keywords=None, dynamic=True):
+    name = _category_name(name)
+    keywords = [str(keyword).lower() for keyword in (keywords or []) if str(keyword).strip()]
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO categories (name, description, keywords_json, dynamic)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET
+        description = COALESCE(excluded.description, categories.description),
+        keywords_json = CASE
+            WHEN excluded.keywords_json != '[]' THEN excluded.keywords_json
+            ELSE categories.keywords_json
+        END,
+        dynamic = CASE WHEN excluded.dynamic = 1 THEN 1 ELSE categories.dynamic END,
+        updated_at = CURRENT_TIMESTAMP
+    """, (
+        name,
+        description,
+        json.dumps(keywords, sort_keys=True),
+        1 if dynamic else 0,
+    ))
+    conn.commit()
+    conn.close()
+    return name
+
+
+def get_categories(include_counts=False):
+    conn = get_connection()
+    cursor = conn.cursor()
+    if include_counts:
+        cursor.execute("""
+        SELECT
+            categories.name,
+            categories.description,
+            categories.keywords_json,
+            categories.dynamic,
+            categories.created_at,
+            categories.updated_at,
+            COUNT(extractions.id) AS count,
+            COALESCE(SUM(extractions.char_count), 0) AS chars
+        FROM categories
+        LEFT JOIN extractions ON extractions.category = categories.name
+        GROUP BY categories.name
+        ORDER BY count DESC, categories.name ASC
+        """)
+    else:
+        cursor.execute("""
+        SELECT name, description, keywords_json, dynamic, created_at, updated_at
+        FROM categories
+        ORDER BY dynamic ASC, name ASC
+        """)
+    rows = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        try:
+            item["keywords"] = json.loads(item.pop("keywords_json") or "[]")
+        except json.JSONDecodeError:
+            item["keywords"] = []
+        item["dynamic"] = bool(item.get("dynamic"))
+        rows.append(item)
+    conn.close()
+    return rows
 
 def add_work(title, author=None, search_query=None):
     """
@@ -582,6 +716,7 @@ def mark_extraction_started(download_id, extractor):
 
 def mark_extraction_succeeded(download_id, extractor, text_uri, text_sha256, char_count, category, warnings=None):
     """Persists a plaintext object and lightweight category for a raw download."""
+    category = ensure_category(category, dynamic=False)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""

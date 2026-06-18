@@ -147,13 +147,17 @@ def format_breakdown():
 def category_breakdown():
     return _rows("""
         SELECT
-            COALESCE(extractions.category, 'unprocessed') AS category,
+            COALESCE(categories.name, extractions.category, 'unprocessed') AS category,
+            categories.description,
+            COALESCE(categories.dynamic, 0) AS dynamic,
+            categories.keywords_json,
             COUNT(*) AS texts,
             COALESCE(SUM(extractions.char_count), 0) AS chars
         FROM downloads
         LEFT JOIN extractions ON extractions.download_id = downloads.id
+        LEFT JOIN categories ON categories.name = extractions.category
         WHERE downloads.status = 'downloaded'
-        GROUP BY COALESCE(extractions.category, 'unprocessed')
+        GROUP BY COALESCE(categories.name, extractions.category, 'unprocessed')
         ORDER BY texts DESC, chars DESC
     """)
 
@@ -486,11 +490,17 @@ def dimensions():
         "scan_statuses": _rows("SELECT COALESCE(scan_status, 'unscanned') AS status, COUNT(*) AS count FROM downloads GROUP BY COALESCE(scan_status, 'unscanned') ORDER BY count DESC"),
         "raw_archive_statuses": _rows("SELECT COALESCE(raw_archive_status, 'local') AS status, COUNT(*) AS count FROM downloads GROUP BY COALESCE(raw_archive_status, 'local') ORDER BY count DESC"),
         "categories": _rows("""
-            SELECT category, COUNT(*) AS count
-            FROM extractions
-            WHERE category IS NOT NULL
-            GROUP BY category
-            ORDER BY count DESC
+            SELECT
+                categories.name AS category,
+                categories.description,
+                categories.dynamic,
+                categories.keywords_json,
+                COUNT(extractions.id) AS count,
+                COALESCE(SUM(extractions.char_count), 0) AS chars
+            FROM categories
+            LEFT JOIN extractions ON extractions.category = categories.name
+            GROUP BY categories.name
+            ORDER BY count DESC, categories.name ASC
         """),
         "search_queries": _rows("""
             SELECT search_query, COUNT(*) AS count

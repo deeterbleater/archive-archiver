@@ -75,6 +75,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(summary["deleted_local_raw_files"], 0)
         self.assertEqual(sites[0]["site"], "example.org")
         self.assertEqual(categories[0]["category"], "philosophy")
+        self.assertIn("description", categories[0])
+        self.assertIn("dynamic", categories[0])
         self.assertEqual(scans[0]["status"], "clean")
         self.assertEqual(trust[0]["trust_level"], "trusted")
         self.assertEqual(raw_archives[0]["status"], "local")
@@ -118,6 +120,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["files"][0]["extraction_status"], "processed")
         self.assertEqual(payload["files"][0]["scan_status"], "clean")
         self.assertEqual(payload["files"][0]["trust_level"], "trusted")
+
+    def test_dimensions_include_dynamic_category_metadata(self):
+        db.ensure_category(
+            "thelema",
+            description="Auto-created during extraction.",
+            keywords=["thelema", "ritual"],
+            dynamic=True,
+        )
+
+        payload = self.api.dimensions()
+        category = next(item for item in payload["categories"] if item["category"] == "thelema")
+
+        self.assertEqual(category["description"], "Auto-created during extraction.")
+        self.assertEqual(category["dynamic"], 1)
+        self.assertIn("thelema", category["keywords_json"])
 
 
 if __name__ == "__main__":

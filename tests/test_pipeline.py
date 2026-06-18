@@ -6,6 +6,7 @@ import unittest
 import corpus
 import db
 import downloader
+import processor
 
 
 class PipelineStateTests(unittest.TestCase):
@@ -121,6 +122,27 @@ class PipelineStateTests(unittest.TestCase):
 
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["format"], "Text")
+
+    def test_dynamic_category_is_created_when_defaults_do_not_match(self):
+        row = {
+            "title": "Thelema Ritual Notes",
+            "author": "Test Author",
+            "site": "fixture.example",
+        }
+        text = "thelema ritual thelema ceremonial magick aeon will star"
+
+        category = processor.categorize_text(row, text)
+        categories = {item["name"]: item for item in db.get_categories()}
+
+        self.assertEqual(category, "thelema")
+        self.assertTrue(categories["thelema"]["dynamic"])
+        self.assertIn("ritual", categories["thelema"]["keywords"])
+
+    def test_default_categories_are_seeded(self):
+        categories = {item["name"] for item in db.get_categories()}
+
+        self.assertIn("philosophy", categories)
+        self.assertIn("anarchism", categories)
 
     def test_existing_archived_work_does_not_reenter_pending_downloads(self):
         self._add_processed_text("Archived Once", "Already in plaintext.")

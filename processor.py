@@ -13,6 +13,18 @@ import s3_storage
 EXTRACTOR_VERSION = "plaintext.v2"
 DEFAULT_TEXT_BUCKET_DIR = os.getenv("ARCHIVE_TEXT_BUCKET_DIR", "bucket/text")
 ARCHIVE_RAW_TO_S3 = os.getenv("ARCHIVE_RAW_TO_S3", "0").lower() in ("1", "true", "yes")
+STOPWORDS = {
+    "about", "after", "again", "against", "also", "among", "because", "before",
+    "being", "between", "could", "every", "first", "from", "have", "into",
+    "more", "most", "other", "over", "shall", "should", "such", "than",
+    "that", "their", "there", "these", "they", "this", "those", "through",
+    "under", "upon", "were", "what", "when", "where", "which", "while",
+    "with", "without", "would", "your", "the", "and", "for", "not", "are",
+    "but", "you", "was", "his", "her", "its", "has", "had", "who", "one",
+    "all", "can", "our", "out", "may", "will", "been", "them", "then",
+    "some", "only", "many", "much", "very", "chapter", "page", "book",
+    "archive", "library", "text", "work", "author",
+}
 
 
 class UnsupportedFormat(ValueError):
@@ -111,19 +123,41 @@ def categorize_text(row, text):
         text[:5000],
     ]).lower()
 
-    categories = [
-        ("egoism", ("egoist", "egoism", "stirner")),
-        ("anarchism", ("anarchist", "anarchism", "libertarian communism")),
-        ("philosophy", ("philosophy", "metaphysics", "ethics", "epistemology")),
-        ("political_economy", ("capital", "labor", "property", "economics")),
-        ("history", ("history", "century", "revolution", "war")),
-        ("literature", ("novel", "poem", "fiction", "drama")),
-    ]
-
-    for category, needles in categories:
+    for category in db.get_categories():
+        needles = category.get("keywords") or [category["name"].replace("_", " ")]
         if any(needle in haystack for needle in needles):
-            return category
-    return "uncategorized"
+            return category["name"]
+    return create_dynamic_category(row, text)
+
+
+def create_dynamic_category(row, text):
+    source = " ".join([
+        str(row.get("title") or ""),
+        text[:20000],
+    ]).lower()
+    counts = {}
+    for token in re.findall(r"[a-z][a-z0-9_'-]{3,}", source):
+        token = token.strip("'_-")
+        if len(token) < 4 or token in STOPWORDS or token.isdigit():
+            continue
+        counts[token] = counts.get(token, 0) + 1
+
+    if not counts:
+        return db.ensure_category(
+            "uncategorized",
+            description="Auto-created fallback for works without enough category signals.",
+            keywords=[],
+            dynamic=True,
+        )
+
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    keywords = [token for token, _count in ranked[:8]]
+    return db.ensure_category(
+        keywords[0],
+        description="Auto-created during extraction because no existing category matched.",
+        keywords=keywords,
+        dynamic=True,
+    )
 
 
 def _text_storage_key(row, text_sha256):
