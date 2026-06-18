@@ -18,6 +18,7 @@ import scrapers
 import llm
 import downloader
 import processor
+import corpus
 
 def print_banner():
     print("=========================================")
@@ -270,6 +271,7 @@ def handle_status(args):
             print(f"  - {status}: {count}")
     else:
         print("  - none")
+    print(f"\nCorpus Builds: {stats['total_corpus_builds']}")
     print("=================================================")
 
 def handle_download(args):
@@ -294,6 +296,32 @@ def handle_process(args):
     print("\n=============== PROCESSING SUMMARY ==============")
     for status, count in results.items():
         print(f"{status}: {count}")
+    print("=================================================")
+
+def handle_corpus(args):
+    try:
+        result = corpus.build_corpus(
+            name=args.name,
+            category=args.category,
+            site=args.site,
+            query=args.query,
+            ordering_strategy=args.ordering,
+            seed=args.seed,
+            limit=args.limit,
+            substitutions_path=args.substitutions_file,
+            output_dir=args.bucket_dir,
+        )
+    except corpus.CorpusBuildError as exc:
+        print(f"[!] Corpus build failed: {exc}")
+        sys.exit(1)
+
+    print("\n================ CORPUS BUILD ===================")
+    print(f"Build ID: {result['build_id']}")
+    print(f"Manifest SHA-256: {result['manifest_sha256']}")
+    print(f"Items: {result['item_count']}")
+    print(f"Total chars: {result['total_chars']}")
+    print(f"Manifest: {result['manifest_path']}")
+    print(f"Corpus text: {result['corpus_path']}")
     print("=================================================")
 
 def main():
@@ -333,6 +361,18 @@ def main():
     parser_process.add_argument("--limit", type=int, default=10, help="Maximum downloads to process in this run.")
     parser_process.add_argument("--bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
     parser_process.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
+
+    # Corpus Command
+    parser_corpus = subparsers.add_parser("corpus", help="Build an immutable corpus manifest from processed plaintext.")
+    parser_corpus.add_argument("name", help="Name for this corpus recipe.")
+    parser_corpus.add_argument("--category", help="Only include processed texts with this category.")
+    parser_corpus.add_argument("--site", help="Only include processed texts from this source site.")
+    parser_corpus.add_argument("--query", help="Match search query, title, author, or category text.")
+    parser_corpus.add_argument("--ordering", choices=["title", "hash", "created", "random"], default="title", help="Deterministic ordering strategy.")
+    parser_corpus.add_argument("--seed", type=int, default=0, help="Seed used by --ordering random.")
+    parser_corpus.add_argument("--limit", type=int, help="Maximum processed texts to include.")
+    parser_corpus.add_argument("--substitutions-file", help="JSON object or list of {'from','to'} replacements.")
+    parser_corpus.add_argument("--bucket-dir", default=corpus.DEFAULT_CORPUS_BUCKET_DIR, help="Filesystem-backed corpus artifact directory.")
     
     args = parser.parse_args()
     print_banner()
@@ -349,6 +389,8 @@ def main():
         handle_download(args)
     elif args.command == "process":
         handle_process(args)
+    elif args.command == "corpus":
+        handle_corpus(args)
 
 if __name__ == "__main__":
     main()

@@ -7,12 +7,26 @@ def get_connection():
     """Returns a connection to the SQLite database."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+def _ensure_column(cursor, table, column, definition):
+    cursor.execute(f"PRAGMA table_info({table})")
+    existing = {row[1] for row in cursor.fetchall()}
+    if column not in existing:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 def init_db():
     """Initializes the SQLite database tables."""
     conn = get_connection()
     cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        version TEXT PRIMARY KEY,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
     
     # Create works table
     cursor.execute("""
@@ -52,6 +66,9 @@ def init_db():
         sha256 TEXT,
         bytes INTEGER,
         content_type TEXT,
+        final_url TEXT,
+        etag TEXT,
+        last_modified TEXT,
         http_status INTEGER,
         attempts INTEGER NOT NULL DEFAULT 0,
         error TEXT,
@@ -80,6 +97,61 @@ def init_db():
         FOREIGN KEY (download_id) REFERENCES downloads (id) ON DELETE CASCADE,
         UNIQUE(download_id, extractor)
     )
+    """)
+
+    _ensure_column(cursor, "downloads", "final_url", "TEXT")
+    _ensure_column(cursor, "downloads", "etag", "TEXT")
+    _ensure_column(cursor, "downloads", "last_modified", "TEXT")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS corpus_specs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        selection_json TEXT NOT NULL,
+        ordering_strategy TEXT NOT NULL,
+        normalizer_version TEXT NOT NULL,
+        substitutions_sha256 TEXT NOT NULL,
+        substitutions_json TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS corpus_builds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        spec_id INTEGER NOT NULL,
+        manifest_sha256 TEXT NOT NULL UNIQUE,
+        manifest_uri TEXT NOT NULL,
+        corpus_uri TEXT NOT NULL,
+        item_count INTEGER NOT NULL,
+        total_chars INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (spec_id) REFERENCES corpus_specs (id) ON DELETE RESTRICT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS corpus_items (
+        build_id INTEGER NOT NULL,
+        item_index INTEGER NOT NULL,
+        extraction_id INTEGER NOT NULL,
+        work_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        author TEXT,
+        text_uri TEXT NOT NULL,
+        text_sha256 TEXT NOT NULL,
+        transformed_sha256 TEXT NOT NULL,
+        char_count INTEGER NOT NULL,
+        PRIMARY KEY (build_id, item_index),
+        FOREIGN KEY (build_id) REFERENCES corpus_builds (id) ON DELETE CASCADE,
+        FOREIGN KEY (extraction_id) REFERENCES extractions (id) ON DELETE RESTRICT,
+        FOREIGN KEY (work_id) REFERENCES works (id) ON DELETE RESTRICT
+    )
+    """)
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO schema_migrations(version)
+    VALUES ('001_manifest_download_process_corpus')
     """)
     
     conn.commit()
@@ -178,6 +250,9 @@ def get_stats():
 
     cursor.execute("SELECT status, COUNT(*) FROM extractions GROUP BY status")
     extractions_by_status = {row[0]: row[1] for row in cursor.fetchall()}
+
+    cursor.execute("SELECT COUNT(*) FROM corpus_builds")
+    total_corpus_builds = cursor.fetchone()[0]
     
     conn.close()
     return {
@@ -186,6 +261,7 @@ def get_stats():
         "files_by_site": files_by_site,
         "downloads_by_status": downloads_by_status,
         "extractions_by_status": extractions_by_status,
+        "total_corpus_builds": total_corpus_builds,
     }
 
 def get_pending_download_files(limit=10):
@@ -230,7 +306,18 @@ def mark_download_started(file_id):
     conn.commit()
     conn.close()
 
-def mark_download_succeeded(file_id, bucket_uri, storage_key, sha256, byte_count, content_type=None, http_status=None):
+def mark_download_succeeded(
+    file_id,
+    bucket_uri,
+    storage_key,
+    sha256,
+    byte_count,
+    content_type=None,
+    http_status=None,
+    final_url=None,
+    etag=None,
+    last_modified=None,
+):
     """Persists the raw-object location and hash for a completed download."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -243,12 +330,26 @@ def mark_download_succeeded(file_id, bucket_uri, storage_key, sha256, byte_count
         sha256 = ?,
         bytes = ?,
         content_type = ?,
+        final_url = ?,
+        etag = ?,
+        last_modified = ?,
         http_status = ?,
         error = NULL,
         updated_at = CURRENT_TIMESTAMP,
         downloaded_at = CURRENT_TIMESTAMP
     WHERE file_id = ?
-    """, (bucket_uri, storage_key, sha256, byte_count, content_type, http_status, file_id))
+    """, (
+        bucket_uri,
+        storage_key,
+        sha256,
+        byte_count,
+        content_type,
+        final_url,
+        etag,
+        last_modified,
+        http_status,
+        file_id,
+    ))
     conn.commit()
     conn.close()
 
@@ -368,6 +469,161 @@ def mark_extraction_failed(download_id, extractor, error):
     """, (str(error)[:1000], download_id, extractor))
     conn.commit()
     conn.close()
+
+def get_processed_extractions(category=None, site=None, query=None, limit=None):
+    """Returns extracted plaintext rows eligible for deterministic corpus builds."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    filters = ["extractions.status = 'processed'", "extractions.text_uri IS NOT NULL"]
+    params = []
+
+    if category:
+        filters.append("extractions.category = ?")
+        params.append(category)
+    if site:
+        filters.append("files.site = ?")
+        params.append(site)
+    if query:
+        filters.append("""
+        (
+            works.search_query LIKE ?
+            OR works.title LIKE ?
+            OR COALESCE(works.author, '') LIKE ?
+            OR COALESCE(extractions.category, '') LIKE ?
+        )
+        """)
+        like_query = f"%{query}%"
+        params.extend([like_query, like_query, like_query, like_query])
+
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(limit)
+
+    cursor.execute(f"""
+    SELECT
+        extractions.id AS extraction_id,
+        extractions.extractor,
+        extractions.text_uri,
+        extractions.text_sha256,
+        extractions.char_count,
+        extractions.category,
+        downloads.id AS download_id,
+        downloads.sha256 AS raw_sha256,
+        files.id AS file_id,
+        files.work_id,
+        files.site,
+        files.format,
+        files.url,
+        files.download_url,
+        works.title,
+        works.author,
+        works.search_query
+    FROM extractions
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE {" AND ".join(filters)}
+    ORDER BY works.title COLLATE NOCASE, works.author COLLATE NOCASE, extractions.text_sha256
+    {limit_clause}
+    """, params)
+
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def upsert_corpus_spec(name, selection_json, ordering_strategy, normalizer_version, substitutions_sha256, substitutions_json):
+    """Creates or updates a named corpus recipe and returns its id."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO corpus_specs (
+        name,
+        selection_json,
+        ordering_strategy,
+        normalizer_version,
+        substitutions_sha256,
+        substitutions_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET
+        selection_json = excluded.selection_json,
+        ordering_strategy = excluded.ordering_strategy,
+        normalizer_version = excluded.normalizer_version,
+        substitutions_sha256 = excluded.substitutions_sha256,
+        substitutions_json = excluded.substitutions_json
+    """, (
+        name,
+        selection_json,
+        ordering_strategy,
+        normalizer_version,
+        substitutions_sha256,
+        substitutions_json,
+    ))
+    conn.commit()
+    cursor.execute("SELECT id FROM corpus_specs WHERE name = ?", (name,))
+    spec_id = cursor.fetchone()[0]
+    conn.close()
+    return spec_id
+
+def add_corpus_build(spec_id, manifest_sha256, manifest_uri, corpus_uri, item_count, total_chars, items):
+    """Persists an immutable corpus build and its ordered item manifest."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO corpus_builds (
+        spec_id,
+        manifest_sha256,
+        manifest_uri,
+        corpus_uri,
+        item_count,
+        total_chars
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(manifest_sha256) DO UPDATE SET
+        manifest_uri = excluded.manifest_uri,
+        corpus_uri = excluded.corpus_uri,
+        item_count = excluded.item_count,
+        total_chars = excluded.total_chars
+    """, (spec_id, manifest_sha256, manifest_uri, corpus_uri, item_count, total_chars))
+    conn.commit()
+    cursor.execute("SELECT id FROM corpus_builds WHERE manifest_sha256 = ?", (manifest_sha256,))
+    build_id = cursor.fetchone()[0]
+
+    cursor.execute("DELETE FROM corpus_items WHERE build_id = ?", (build_id,))
+    cursor.executemany("""
+    INSERT INTO corpus_items (
+        build_id,
+        item_index,
+        extraction_id,
+        work_id,
+        title,
+        author,
+        text_uri,
+        text_sha256,
+        transformed_sha256,
+        char_count
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        (
+            build_id,
+            item["item_index"],
+            item["extraction_id"],
+            item["work_id"],
+            item["title"],
+            item.get("author"),
+            item["text_uri"],
+            item["text_sha256"],
+            item["transformed_sha256"],
+            item["char_count"],
+        )
+        for item in items
+    ])
+    conn.commit()
+    conn.close()
+    return build_id
 
 def get_works_by_queries(queries):
     """

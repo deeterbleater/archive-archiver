@@ -1,0 +1,110 @@
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+import corpus
+import db
+
+
+class PipelineStateTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.old_db_file = db.DB_FILE
+        db.DB_FILE = str(Path(self.tempdir.name) / "archive_works.db")
+        db.init_db()
+
+    def tearDown(self):
+        db.DB_FILE = self.old_db_file
+        self.tempdir.cleanup()
+
+    def _add_processed_text(self, title, text, category="philosophy", site="example.org"):
+        root = Path(self.tempdir.name)
+        text_path = root / f"{title.lower().replace(' ', '-')}.txt"
+        normalized = corpus.normalize_text(text)
+        text_path.write_text(normalized + "\n", encoding="utf-8")
+        text_sha256 = corpus._sha256_text(normalized)
+
+        work_id = db.add_work(title=title, author="Test Author", search_query="test query")
+        db.add_file(
+            work_id=work_id,
+            site=site,
+            format="Text",
+            url=f"https://{site}/{title}",
+            file_size=f"{len(text)} bytes",
+            download_source="fixture",
+            download_url=f"https://{site}/{title}.txt",
+        )
+
+        pending = db.get_pending_download_files(limit=10)
+        file_id = pending[-1]["id"]
+        db.mark_download_started(file_id)
+        db.mark_download_succeeded(
+            file_id=file_id,
+            bucket_uri=text_path.resolve().as_uri(),
+            storage_key=text_path.name,
+            sha256="raw-" + text_sha256[:16],
+            byte_count=len(text.encode("utf-8")),
+            content_type="text/plain",
+            http_status=200,
+            final_url=f"https://{site}/{title}.txt",
+            etag='"fixture"',
+            last_modified="Tue, 01 Jan 2030 00:00:00 GMT",
+        )
+
+        extraction_row = db.get_pending_extractions(limit=10)[-1]
+        download_id = extraction_row["id"]
+        db.mark_extraction_started(download_id, "plaintext.v2")
+        db.mark_extraction_succeeded(
+            download_id=download_id,
+            extractor="plaintext.v2",
+            text_uri=text_path.resolve().as_uri(),
+            text_sha256=text_sha256,
+            char_count=len(normalized),
+            category=category,
+            warnings="fixture",
+        )
+        return text_sha256
+
+    def test_download_and_extraction_state_counts(self):
+        self._add_processed_text("Alpha", "A compact philosophy fixture.")
+
+        stats = db.get_stats()
+
+        self.assertEqual(stats["downloads_by_status"], {"downloaded": 1})
+        self.assertEqual(stats["extractions_by_status"], {"processed": 1})
+
+    def test_corpus_build_is_deterministic_and_records_substitutions(self):
+        self._add_processed_text("Beta", "The self owns the text.")
+        self._add_processed_text("Alpha", "The text owns the order.")
+
+        substitutions_path = Path(self.tempdir.name) / "subs.json"
+        substitutions_path.write_text(json.dumps({"text": "corpus"}), encoding="utf-8")
+        output_dir = Path(self.tempdir.name) / "corpora"
+
+        first = corpus.build_corpus(
+            name="fixture",
+            query="test",
+            ordering_strategy="title",
+            substitutions_path=str(substitutions_path),
+            output_dir=str(output_dir),
+        )
+        second = corpus.build_corpus(
+            name="fixture",
+            query="test",
+            ordering_strategy="title",
+            substitutions_path=str(substitutions_path),
+            output_dir=str(output_dir),
+        )
+
+        self.assertEqual(first["manifest_sha256"], second["manifest_sha256"])
+        self.assertEqual(first["item_count"], 2)
+        manifest = json.loads(Path(first["manifest_path"]).read_text(encoding="utf-8"))
+        self.assertEqual([item["title"] for item in manifest["items"]], ["Alpha", "Beta"])
+        corpus_text = Path(first["corpus_path"]).read_text(encoding="utf-8")
+        self.assertIn("The corpus owns the order.", corpus_text)
+        self.assertIn("The self owns the corpus.", corpus_text)
+
+
+if __name__ == "__main__":
+    unittest.main()

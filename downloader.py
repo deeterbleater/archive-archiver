@@ -128,6 +128,9 @@ def download_file(file_row, bucket_dir=DEFAULT_RAW_BUCKET_DIR, limiter=None, max
                 "bytes": byte_count,
                 "content_type": content_type,
                 "http_status": status_code,
+                "final_url": response.url,
+                "etag": response.headers.get("ETag"),
+                "last_modified": response.headers.get("Last-Modified"),
             }
     finally:
         temp_path.unlink(missing_ok=True)

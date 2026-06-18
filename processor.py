@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 import db
 
 
-EXTRACTOR_VERSION = "plaintext.v1"
+EXTRACTOR_VERSION = "plaintext.v2"
 DEFAULT_TEXT_BUCKET_DIR = os.getenv("ARCHIVE_TEXT_BUCKET_DIR", "bucket/text")
 
 
@@ -46,6 +46,40 @@ def _normalize_text(text):
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+def _extract_html(raw):
+    soup = BeautifulSoup(raw, "html.parser")
+    for node in soup(["script", "style", "meta", "noscript"]):
+        node.decompose()
+    return _normalize_text(soup.get_text(separator="\n", strip=True))
+
+def _extract_pdf(path):
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise UnsupportedFormat("PDF extraction requires the canonical 'pypdf' package") from exc
+
+    reader = PdfReader(str(path))
+    pages = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        try:
+            pages.append(page.extract_text() or "")
+        except Exception as exc:
+            pages.append(f"\n[page {page_number} extraction failed: {exc}]\n")
+    return _normalize_text("\n\n".join(pages))
+
+def _extract_epub(path):
+    try:
+        import ebooklib
+        from ebooklib import epub
+    except ImportError as exc:
+        raise UnsupportedFormat("EPUB extraction requires the canonical 'EbookLib' package") from exc
+
+    book = epub.read_epub(str(path))
+    chapters = []
+    for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+        chapters.append(_extract_html(item.get_content()))
+    return _normalize_text("\n\n".join(chapters))
+
 
 def extract_plaintext(path, content_type=None, format_hint=None):
     suffix = path.suffix.lower()
@@ -53,13 +87,16 @@ def extract_plaintext(path, content_type=None, format_hint=None):
     raw = path.read_bytes()
 
     if suffix in (".html", ".htm", ".xml") or "html" in hint:
-        soup = BeautifulSoup(raw, "html.parser")
-        for node in soup(["script", "style", "meta", "noscript"]):
-            node.decompose()
-        return _normalize_text(soup.get_text(separator="\n", strip=True)), "html"
+        return _extract_html(raw), "html"
 
     if suffix in (".txt", ".text", ".md", ".json", ".csv") or "text" in hint:
         return _normalize_text(_decode_bytes(raw)), "text"
+
+    if suffix == ".pdf" or "pdf" in hint:
+        return _extract_pdf(path), "pdf"
+
+    if suffix == ".epub" or "epub" in hint:
+        return _extract_epub(path), "epub"
 
     raise UnsupportedFormat(f"unsupported plaintext extractor format: {suffix or format_hint or content_type}")
 
