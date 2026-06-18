@@ -22,6 +22,7 @@ import downloader
 import processor
 import corpus
 import agent
+import terminal_theme
 
 PUBLIC_COLLECTOR_QUERIES = [
     "public domain philosophy",
@@ -39,15 +40,16 @@ PUBLIC_COLLECTOR_QUERIES = [
 DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack")
 ALL_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack", "annas_archive", "slum_archives", "archive_plugins")
 
-BANNER = """░░      ░░░  ░░░░░░░░░      ░░░        ░░░░░░░
-▒  ▒▒▒▒  ▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒
-▓  ▓▓▓▓  ▓▓  ▓▓▓▓▓▓▓▓  ▓▓▓   ▓▓      ▓▓▓▓▓▓▓▓▓
-█        ██  ████████  ████  ██  █████████████
-█  ████  ██        ███      ███        ███████
-____Agentic Lexicon Generation Engine____0.1__"""
+BANNER_LINES = [
+    "░░      ░░░  ░░░░░░░░░      ░░░        ░░░░░░░",
+    "▒  ▒▒▒▒  ▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒",
+    "▓  ▓▓▓▓  ▓▓  ▓▓▓▓▓▓▓▓  ▓▓▓   ▓▓      ▓▓▓▓▓▓▓▓▓",
+    "█        ██  ████████  ████  ██  █████████████",
+    "█  ████  ██        ███      ███        ███████",
+]
 
 def print_banner():
-    print(BANNER)
+    terminal_theme.print_logo(BANNER_LINES)
 
 
 def _add_best_file(work_id, files, base_url, site, default_source, trust_level="trusted"):

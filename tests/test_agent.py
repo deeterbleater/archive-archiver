@@ -56,8 +56,10 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(self.shell.config["max_results"], 7)
         self.assertEqual(self.shell.config["sources"], ["archive_org"])
-        self.assertIn("max_results: 7", output)
-        self.assertIn("sources: archive_org", output)
+        self.assertIn("max_results", output)
+        self.assertIn("7", output)
+        self.assertIn("sources", output)
+        self.assertIn("archive_org", output)
 
     def test_unknown_command_does_not_exit_shell(self):
         result, output = self._run("/launch")
@@ -103,7 +105,7 @@ class AgentHarnessTests(unittest.TestCase):
         result, output = self._run("/goal Find everything about Thelema")
 
         self.assertIsNone(result)
-        self.assertIn("GOAL", output)
+        self.assertIn("Goal", output)
         stored = self.shell.goal_store.list()
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0]["status"], "active")

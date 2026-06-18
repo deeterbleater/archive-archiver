@@ -17,6 +17,7 @@ import goals
 import llm
 import memory
 import processor
+import terminal_theme
 
 
 INTRO = """
@@ -59,6 +60,7 @@ You can talk normally and you also have tools that operate the archive app: stat
 Use tools when the user asks you to perform app work. For example, "download all backlogged works and process them" should call run_backlog_until_done.
 When the user gives a broad archival goal, use web_search to discover terminology, related people, source domains, and query expansions, then use archive search tools and the full download/process/archive workflow.
 When the user asks to add a new archive, call add_archive with its base URL and any known CSS selectors, then search with source archive_plugins. If the generic plugin cannot discover usable result links, explain that this archive needs a custom scraper plugin.
+You may use Rich terminal markup tags in normal assistant replies: [highlight]important[/highlight], [success]done[/success], [warning]watch this[/warning], [danger]problem[/danger], [muted]quiet detail[/muted], [tool]tool name[/tool]. The default highlight color is pond-scum green via [highlight]...[/highlight]. Use tags sparingly and never wrap JSON tool arguments in markup.
 For long tasks, keep working through tool calls until the requested task is complete, stalled, or blocked by a clear error. Report concrete counts and stopping reason.
 For explicit /goal work, set an estimated completion timer and call finish_goal only when the objective is complete or clearly blocked.
 Slash commands such as /status, /search, /download, /process, /archive-raw, /cycle, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
@@ -89,7 +91,7 @@ class AgentCommandError(ValueError):
 
 
 class ArchiveAgentShell(cmd.Cmd):
-    prompt = "alge> "
+    prompt = terminal_theme.prompt()
 
     def __init__(self, cli_module, stdin=None, stdout=None):
         super().__init__(stdin=stdin, stdout=stdout)
@@ -203,8 +205,8 @@ class ArchiveAgentShell(cmd.Cmd):
     def _auto_compact(self):
         result = self.memory.compact(model=self.config["model"], force=False)
         if result.get("compacted"):
-            print(
-                "[memory] compacted "
+            terminal_theme.print_markup(
+                "[muted]memory[/muted] compacted "
                 f"{result['source_entries']} entries to {result['kept_entries']} "
                 f"({result['tokens']} estimated tokens)."
             )
@@ -227,11 +229,11 @@ class ArchiveAgentShell(cmd.Cmd):
         try:
             response = self._run_llm_tool_loop(messages)
         except Exception as exc:
-            print(f"[!] OpenRouter chat error: {exc}")
+            terminal_theme.print_markup(f"[danger][!] OpenRouter chat error:[/danger] {exc}")
             return
 
         if response:
-            print(response)
+            terminal_theme.print_markup(response)
             self.memory.append("assistant", response, {"model": self._active_model()})
         self._auto_compact()
 
@@ -257,7 +259,7 @@ class ArchiveAgentShell(cmd.Cmd):
             assistant_message = {"role": "assistant", "content": message.content or "", "tool_calls": []}
             tool_messages = []
             if content:
-                print(content)
+                terminal_theme.print_markup(content)
 
             for call in tool_calls:
                 if stop_checker and stop_checker():
@@ -269,7 +271,7 @@ class ArchiveAgentShell(cmd.Cmd):
                     arguments = {}
                     result = {"ok": False, "error": f"invalid tool arguments: {exc}"}
                 else:
-                    print(f"[agent] {function.name}({arguments})")
+                    terminal_theme.print_markup(f"[tool]agent[/tool] [highlight]{function.name}[/highlight]({arguments})")
                     result = self.tools.execute(function.name, arguments)
 
                 self.memory.append("tool", function.name, {"arguments": arguments, "result": result})
@@ -300,7 +302,7 @@ class ArchiveAgentShell(cmd.Cmd):
 
     def do_exit(self, _line):
         """Leave the agent harness."""
-        print("bye")
+        terminal_theme.print_markup("[muted]bye[/muted]")
         return True
 
     def do_quit(self, line):
@@ -314,12 +316,12 @@ class ArchiveAgentShell(cmd.Cmd):
 
     def do_config(self, _line):
         """Show current session defaults."""
-        print("\n================ AGENT CONFIG ===================")
+        table = terminal_theme.make_table("Setting", "Value", title="Agent Config")
         for key, value in self.config.items():
             if isinstance(value, list):
                 value = ", ".join(value)
-            print(f"{key}: {value}")
-        print("=================================================")
+            table.add_row(str(key), str(value))
+        terminal_theme.console.print(table)
 
     def _model_rows(self, refresh=False):
         payload = self.memory.fetch_model_specs(force=refresh)
@@ -343,14 +345,15 @@ class ArchiveAgentShell(cmd.Cmd):
         page = max(0, min(page, page_count - 1))
         start = page * MODEL_PAGE_SIZE
         visible = rows[start:start + MODEL_PAGE_SIZE]
-        print("\n================ OPENROUTER MODELS ==============")
-        print(f"active: {self._active_model()}")
-        print(f"page: {page + 1}/{page_count}  models: {len(rows)}")
+        terminal_theme.print_rule("OpenRouter Models")
+        terminal_theme.print_markup(f"[label]active:[/label] [highlight]{self._active_model()}[/highlight]")
+        terminal_theme.print_markup(f"[label]page:[/label] {page + 1}/{page_count}  [label]models:[/label] {len(rows)}")
         for offset, row in enumerate(visible, start=1):
             marker = "*" if row["id"] == self._active_model() else " "
-            print(f"{marker} {offset:>2}. {row['id']}  ctx={row['context_length']}")
-        print("Use left/right or up/down arrows to page, number + Enter to select, q to quit.")
-        print("=================================================")
+            style = "highlight" if marker == "*" else "muted"
+            terminal_theme.print_markup(f"[{style}]{marker} {offset:>2}. {row['id']}[/]  ctx={row['context_length']}")
+        terminal_theme.print_markup("[muted]Use left/right or up/down arrows to page, number + Enter to select, q to quit.[/muted]")
+        terminal_theme.print_rule(style="muted")
         return page
 
     def _read_model_selection(self, rows):
@@ -425,23 +428,23 @@ class ArchiveAgentShell(cmd.Cmd):
 
         if args.model:
             self.config["model"] = args.model
-            print(f"[+] model updated: {self.config['model']}")
+            terminal_theme.print_markup(f"[success][+][/success] model updated: [highlight]{self.config['model']}[/highlight]")
             return
 
         try:
             rows = self._model_rows(refresh=args.refresh)
         except Exception as exc:
-            print(f"[!] Could not load OpenRouter models: {exc}")
+            terminal_theme.print_markup(f"[danger][!][/danger] Could not load OpenRouter models: {exc}")
             return
         if not rows:
-            print("[!] OpenRouter returned no models.")
+            terminal_theme.print_markup("[warning][!][/warning] OpenRouter returned no models.")
             return
 
         selected = self._read_model_selection(rows)
         if selected:
             self.config["model"] = selected
             context_length = self.memory.model_context_length(model=selected)
-            print(f"[+] model updated: {selected} (context {context_length})")
+            terminal_theme.print_markup(f"[success][+][/success] model updated: [highlight]{selected}[/highlight] [muted](context {context_length})[/muted]")
 
     def do_set(self, line):
         """Set a session default: /set model MODEL | /set max-results N | /set sources archive_org anarchist_library arxiv substack."""
@@ -539,19 +542,20 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         return self._chat_messages(content)
 
     def _print_goal(self, goal):
-        print("\n==================== GOAL =======================")
-        print(f"id: {goal['id']}")
-        print(f"status: {goal.get('status')}")
-        print(f"objective: {goal.get('objective')}")
-        print(f"cycles: {goal.get('cycles', 0)}")
-        print(f"estimated_completion_at: {goal.get('estimated_completion_at')}")
-        print(f"updated_at: {goal.get('updated_at')}")
+        lines = [
+            f"[label]id:[/label] [highlight]{goal['id']}[/highlight]",
+            f"[label]status:[/label] {goal.get('status')}",
+            f"[label]objective:[/label] {goal.get('objective')}",
+            f"[label]cycles:[/label] {goal.get('cycles', 0)}",
+            f"[label]estimated_completion_at:[/label] {goal.get('estimated_completion_at')}",
+            f"[label]updated_at:[/label] {goal.get('updated_at')}",
+        ]
         events = goal.get("events", [])[-5:]
         if events:
-            print("recent events:")
+            lines.append("[label]recent events:[/label]")
             for event in events:
-                print(f"  - {event.get('ts')} [{event.get('kind')}] {event.get('content')}")
-        print("=================================================")
+                lines.append(f"  - [muted]{event.get('ts')}[/muted] [tool]{event.get('kind')}[/tool] {event.get('content')}")
+        terminal_theme.print_panel("\n".join(lines), title="Goal", border_style="pond")
 
     def _request_goal_stop(self):
         self._goal_stop_requested = True
@@ -580,7 +584,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                 key = stream.read(1)
                 if key in ("q", "Q"):
                     self._request_goal_stop()
-                    print("\n[goal] halt requested; finishing current operation...")
+                    terminal_theme.print_markup("\n[warning]goal[/warning] halt requested; finishing current operation...")
                     return
 
         tty.setcbreak(fd)
@@ -599,7 +603,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         self.current_goal = self.goal_store.update(goal["id"], status="running")
         cleanup_key_watcher = self._start_goal_key_watcher()
         if cleanup_key_watcher:
-            print("[goal] running; press q to halt this goal and return to chat.")
+            terminal_theme.print_markup("[highlight]goal[/highlight] running; press [warning]q[/warning] to halt this goal and return to chat.")
         try:
             for _ in range(max_cycles):
                 goal = self.goal_store.get(self.current_goal["id"])
@@ -611,14 +615,14 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                     break
                 cycle = int(goal.get("cycles", 0)) + 1
                 self.goal_store.append_event(goal["id"], "cycle", f"starting goal cycle {cycle}")
-                print(f"[goal] cycle {cycle} for {goal['id']}")
+                terminal_theme.print_markup(f"[highlight]goal[/highlight] cycle {cycle} for [muted]{goal['id']}[/muted]")
                 response = self._run_llm_tool_loop(
                     self._goal_messages(goal, cycle),
                     max_iterations=MAX_GOAL_TOOL_ITERATIONS,
                     stop_checker=self._goal_should_stop,
                 )
                 if response:
-                    print(response)
+                    terminal_theme.print_markup(response)
                     self.goal_store.append_event(goal["id"], "assistant", response)
                 goal = self.goal_store.update(goal["id"], cycles=cycle)
                 self.current_goal = goal
@@ -630,7 +634,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                 if goal.get("status") in ("complete", "blocked", "stopped"):
                     break
                 if sleep_seconds:
-                    print(f"[goal] sleeping {sleep_seconds}s before next cycle")
+                    terminal_theme.print_markup(f"[muted]goal sleeping {sleep_seconds}s before next cycle[/muted]")
                     deadline = time.time() + sleep_seconds
                     while time.time() < deadline and not self._goal_should_stop():
                         time.sleep(min(0.25, deadline - time.time()))
@@ -643,7 +647,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             goal = self.goal_store.update(self.current_goal["id"], status="active")
             self.goal_store.append_event(goal["id"], "interrupted", "goal run interrupted by operator")
             self.current_goal = goal
-            print("\n[goal] interrupted; goal remains active and can be resumed")
+            terminal_theme.print_markup("\n[warning]goal[/warning] interrupted; goal remains active and can be resumed")
         finally:
             if cleanup_key_watcher:
                 cleanup_key_watcher()
@@ -916,53 +920,37 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
     def do_help(self, arg):
         if arg:
             return super().do_help(arg)
-        print("""
-Commands:
-  /status
-      Show database counts and pipeline state.
-  /config
-      Show session defaults used by agent commands.
-  /model [MODEL_ID]
-      Fetch OpenRouter models and choose the active chat/model-extraction model.
-  /set model MODEL
-  /set max-results N
-  /set sources archive_org anarchist_library arxiv substack
-  /set rps N
-      Update session defaults.
-  /set memory-path PATH
-  /set compaction-ratio 0.55
-      Update memory and compaction defaults.
-  /search [--max-results N] [--sources SRC ...] QUERY
-      Discover archive records for a query.
-  /url URL
-      Ingest one archive detail page.
-  /research [--max-results N] TOPIC
-      Generate focused search terms, crawl them, and write a report.
-  /download [--limit N] [--domain-workers] [--rps N]
-      Download pending files into the raw bucket.
-  /process [--limit N]
-      Extract plaintext from downloaded files.
-  /archive-raw [--limit N] [--keep-local]
-      Upload processed raw originals to object storage and remove local copies.
-  /cycle [--query QUERY] [--download-limit N] [--process-limit N]
-      Run one discover-download-process cycle.
-  /corpus NAME [--query TEXT] [--ordering title|hash|created|random]
-      Build a deterministic corpus manifest and text bundle.
-  /memory [--limit N] [--search TEXT]
-      Read saved command and note context logs.
-  /remember TEXT
-      Save an operator note into context memory.
-  /context [--refresh]
-      Show model context window, memory estimate, and compaction threshold.
-  /compact [--force]
-      Compact saved context logs using OpenRouter when available.
-  /goal [--run] [--forever] [--max-cycles N] [--sleep-seconds N] OBJECTIVE
-      Create or resume a durable long-running archival goal.
-  /exit
-      Leave the harness.
-
-Normal text without a slash is sent to the active model as chat.
-""".strip())
+        table = terminal_theme.make_table("Command", "Purpose", title="ALGE Commands")
+        rows = [
+            ("/status", "Show database counts and pipeline state."),
+            ("/config", "Show session defaults used by agent commands."),
+            ("/model [MODEL_ID]", "Choose the active OpenRouter model."),
+            ("/set KEY VALUE", "Update session, memory, and compaction defaults."),
+            ("/search QUERY", "Discover archive records for a query."),
+            ("/url URL", "Ingest one archive detail page."),
+            ("/research TOPIC", "Generate focused terms, crawl them, and write a report."),
+            ("/download", "Download pending files into the raw bucket."),
+            ("/process", "Extract plaintext from downloaded files."),
+            ("/archive-raw", "Upload processed raw originals to object storage."),
+            ("/cycle", "Run one discover-download-process cycle."),
+            ("/corpus NAME", "Build a deterministic corpus manifest and text bundle."),
+            ("/memory", "Read saved command and note context logs."),
+            ("/remember TEXT", "Save an operator note into context memory."),
+            ("/context", "Show context window and compaction threshold."),
+            ("/compact", "Compact saved context logs."),
+            ("/goal OBJECTIVE", "Create or resume a durable long-running archival goal."),
+            ("/exit", "Leave the harness."),
+        ]
+        for command, purpose in rows:
+            table.add_row(f"[highlight]{command}[/highlight]", purpose)
+        terminal_theme.console.print(table)
+        terminal_theme.print_panel(
+            "Normal text without a slash is sent to the active model as chat.\n"
+            "Assistant replies can include Rich tags like [highlight]pond-scum green[/highlight], "
+            "[success]success[/success], [warning]warning[/warning], and [danger]danger[/danger].",
+            title="Markup",
+            border_style="pond",
+        )
 
 
 def run_agent(cli_module, command=None):
@@ -970,5 +958,12 @@ def run_agent(cli_module, command=None):
     if command:
         shell.onecmd(command)
         return
-    print(INTRO.strip())
+    terminal_theme.print_panel(
+        "ALGE archive harness\n"
+        "[muted]Type[/muted] [highlight]/help[/highlight] [muted]for commands, "
+        "[highlight]/config[/highlight] [muted]for defaults, or[/muted] "
+        "[highlight]/exit[/highlight] [muted]to leave.[/muted]",
+        title="Agentic Lexicon Generation Engine",
+        border_style="pond",
+    )
     shell.cmdloop()
