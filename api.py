@@ -1,8 +1,9 @@
+import asyncio
 import os
 import sqlite3
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 import db
@@ -98,6 +99,34 @@ def summary():
           )
     """)
     return {**base, **extra, **pending}
+
+
+@app.get("/agent/status/latest")
+def latest_agent_status():
+    return db.get_latest_agent_status()
+
+
+@app.get("/agent/status/recent")
+def recent_agent_status(limit: int = Query(20, ge=1, le=100)):
+    return db.get_recent_agent_statuses(limit=limit)
+
+
+@app.websocket("/ws/agent-status")
+async def agent_status_socket(websocket: WebSocket):
+    await websocket.accept()
+    last_status_id = None
+    try:
+        while True:
+            latest = db.get_latest_agent_status()
+            if latest and latest["id"] != last_status_id:
+                last_status_id = latest["id"]
+                await websocket.send_json({
+                    "type": "agent_status",
+                    "status": latest,
+                })
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        return
 
 
 @app.get("/viz/breakdowns/sites")

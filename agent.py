@@ -19,6 +19,7 @@ import goals
 import llm
 import memory
 import processor
+import db
 import terminal_theme
 
 
@@ -69,6 +70,8 @@ Slash commands such as /status, /search, /download, /process, /archive-raw, /cyc
 """.strip()
 MAX_TOOL_ITERATIONS = 12
 MAX_GOAL_TOOL_ITERATIONS = 20
+IDLE_WARNING_SECONDS = int(os.getenv("ALGE_AGENT_IDLE_WARNING_SECONDS", "120"))
+IDLE_WATCHDOG_INTERVAL_SECONDS = float(os.getenv("ALGE_AGENT_IDLE_WATCHDOG_INTERVAL_SECONDS", "5"))
 
 
 def _parser(prog, description=None):
@@ -117,6 +120,9 @@ class ArchiveAgentShell(cmd.Cmd):
         )
         self.goal_store = goals.GoalStore()
         self.current_goal = None
+        self.session_id = f"alge-{os.getpid()}-{int(time.time())}"
+        self._agent_last_activity = time.monotonic()
+        self._agent_current_operation = "idle"
         self._goal_stop_requested = False
         self.tools = agent_tools.AppToolRunner(self)
 
@@ -142,6 +148,29 @@ class ArchiveAgentShell(cmd.Cmd):
 
     def _active_model(self):
         return self.config["model"] or llm.DEFAULT_MODEL
+
+    def _active_goal_id(self):
+        if self.current_goal:
+            return self.current_goal.get("id")
+        return None
+
+    def _log_agent_status(self, message, loop_kind="chat", phase="update", goal_id=None):
+        try:
+            return db.add_agent_status(
+                message,
+                session_id=self.session_id,
+                loop_kind=loop_kind,
+                phase=phase,
+                model=self._active_model(),
+                goal_id=goal_id or self._active_goal_id(),
+            )
+        except Exception as exc:
+            terminal_theme.print_markup(f"[muted]status log failed: {exc}[/muted]")
+            return None
+
+    def _touch_agent_activity(self, operation):
+        self._agent_last_activity = time.monotonic()
+        self._agent_current_operation = operation
 
     def _chat_messages(self, user_text):
         context_length = self.memory.model_context_length(model=self._active_model())
@@ -229,8 +258,13 @@ class ArchiveAgentShell(cmd.Cmd):
         messages = self._chat_messages(line)
         self.memory.append("user", line, {"model": self._active_model()})
         try:
-            response = self._run_llm_tool_loop(messages)
+            response = self._run_llm_tool_loop(messages, loop_kind="chat")
         except Exception as exc:
+            self._log_agent_status(
+                f"Chat loop failed before completion: {exc}",
+                loop_kind="chat",
+                phase="error",
+            )
             terminal_theme.print_markup(f"[danger][!] OpenRouter chat error:[/danger] {exc}")
             return
 
@@ -239,23 +273,58 @@ class ArchiveAgentShell(cmd.Cmd):
             self.memory.append("assistant", response, {"model": self._active_model()})
         self._auto_compact()
 
-    def _run_llm_tool_loop(self, messages, max_iterations=MAX_TOOL_ITERATIONS, stop_checker=None):
+    def _run_llm_tool_loop(
+        self,
+        messages,
+        max_iterations=MAX_TOOL_ITERATIONS,
+        stop_checker=None,
+        loop_kind="chat",
+        goal_id=None,
+    ):
         final_text = None
         for _iteration in range(max_iterations):
+            iteration = _iteration + 1
+            self._touch_agent_activity(f"{loop_kind} loop {iteration}")
+            self._log_agent_status(
+                f"Starting {loop_kind} loop {iteration} with {self._active_model()}.",
+                loop_kind=loop_kind,
+                phase="start",
+                goal_id=goal_id,
+            )
             if stop_checker and stop_checker():
+                self._log_agent_status(
+                    f"{loop_kind.title()} loop {iteration} halted by operator before the model call.",
+                    loop_kind=loop_kind,
+                    phase="halted",
+                    goal_id=goal_id,
+                )
                 return "[goal] halted by operator."
+            self._touch_agent_activity(f"{loop_kind} loop {iteration} waiting for model")
             completion = llm.chat_completion(
                 messages,
                 model=self._active_model(),
                 tools=agent_tools.TOOL_SCHEMAS,
             )
+            self._touch_agent_activity(f"{loop_kind} loop {iteration} received model response")
             if stop_checker and stop_checker():
+                self._log_agent_status(
+                    f"{loop_kind.title()} loop {iteration} halted by operator after the model call.",
+                    loop_kind=loop_kind,
+                    phase="halted",
+                    goal_id=goal_id,
+                )
                 return "[goal] halted by operator."
             message = completion.choices[0].message
             tool_calls = getattr(message, "tool_calls", None) or []
             content = (message.content or "").strip() if message.content else ""
 
             if not tool_calls:
+                self._log_agent_status(
+                    f"Finished {loop_kind} loop {iteration} with a direct assistant response.",
+                    loop_kind=loop_kind,
+                    phase="end",
+                    goal_id=goal_id,
+                )
                 return content
 
             assistant_message = {"role": "assistant", "content": message.content or "", "tool_calls": []}
@@ -263,10 +332,18 @@ class ArchiveAgentShell(cmd.Cmd):
             if content:
                 terminal_theme.print_markup(content)
 
+            tool_names = []
             for call in tool_calls:
                 if stop_checker and stop_checker():
+                    self._log_agent_status(
+                        f"{loop_kind.title()} loop {iteration} halted while preparing a tool call.",
+                        loop_kind=loop_kind,
+                        phase="halted",
+                        goal_id=goal_id,
+                    )
                     return "[goal] halted by operator."
                 function = call.function
+                tool_names.append(function.name)
                 try:
                     arguments = json.loads(function.arguments or "{}")
                 except json.JSONDecodeError as exc:
@@ -274,7 +351,9 @@ class ArchiveAgentShell(cmd.Cmd):
                     result = {"ok": False, "error": f"invalid tool arguments: {exc}"}
                 else:
                     terminal_theme.print_markup(f"[tool]agent[/tool] [highlight]{function.name}[/highlight]({arguments})")
+                    self._touch_agent_activity(f"tool {function.name} running")
                     result = self.tools.execute(function.name, arguments)
+                    self._touch_agent_activity(f"tool {function.name} returned")
 
                 self.memory.append("tool", function.name, {"arguments": arguments, "result": result})
                 assistant_message["tool_calls"].append({
@@ -292,11 +371,32 @@ class ArchiveAgentShell(cmd.Cmd):
                 })
                 final_text = agent_tools.dumps_tool_result(result)
                 if stop_checker and stop_checker():
+                    self._log_agent_status(
+                        f"{loop_kind.title()} loop {iteration} halted after running {function.name}.",
+                        loop_kind=loop_kind,
+                        phase="halted",
+                        goal_id=goal_id,
+                    )
                     return "[goal] halted by operator."
 
             messages.append(assistant_message)
             messages.extend(tool_messages)
+            tool_summary = ", ".join(tool_names[:4])
+            if len(tool_names) > 4:
+                tool_summary += f", +{len(tool_names) - 4} more"
+            self._log_agent_status(
+                f"Finished {loop_kind} loop {iteration} after {len(tool_names)} tool call(s): {tool_summary}.",
+                loop_kind=loop_kind,
+                phase="end",
+                goal_id=goal_id,
+            )
 
+        self._log_agent_status(
+            f"Stopped {loop_kind} loop after reaching the {max_iterations} iteration limit.",
+            loop_kind=loop_kind,
+            phase="limit",
+            goal_id=goal_id,
+        )
         return (
             "I stopped after the tool-iteration limit. Last tool result:\n"
             f"{final_text or 'no tool result'}"
@@ -607,10 +707,47 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
 
         return cleanup
 
+    def _start_goal_idle_watchdog(self, goal_id):
+        if IDLE_WARNING_SECONDS <= 0:
+            return None
+
+        stop_watcher = threading.Event()
+        last_warning_bucket = None
+
+        def watch_idle():
+            nonlocal last_warning_bucket
+            while not stop_watcher.wait(IDLE_WATCHDOG_INTERVAL_SECONDS):
+                if self._goal_should_stop():
+                    return
+                idle_seconds = time.monotonic() - self._agent_last_activity
+                if idle_seconds < IDLE_WARNING_SECONDS:
+                    continue
+                warning_bucket = int(idle_seconds // IDLE_WARNING_SECONDS)
+                if warning_bucket == last_warning_bucket:
+                    continue
+                last_warning_bucket = warning_bucket
+                message = (
+                    f"Goal has been idle for {int(idle_seconds)}s while {self._agent_current_operation}. "
+                    "The watchdog is still alive; press q in the agent pane to request a halt."
+                )
+                self._log_agent_status(message, loop_kind="goal", phase="idle", goal_id=goal_id)
+                terminal_theme.print_markup(f"\n[warning]watchdog[/warning] {message}")
+
+        thread = threading.Thread(target=watch_idle, daemon=True)
+        thread.start()
+
+        def cleanup():
+            stop_watcher.set()
+            thread.join(timeout=0.2)
+
+        return cleanup
+
     def _run_goal(self, goal, max_cycles=1, sleep_seconds=0):
         self._goal_stop_requested = False
         self.current_goal = self.goal_store.update(goal["id"], status="running")
+        self._touch_agent_activity("goal starting")
         cleanup_key_watcher = self._start_goal_key_watcher()
+        cleanup_idle_watchdog = self._start_goal_idle_watchdog(goal["id"])
         if cleanup_key_watcher:
             terminal_theme.print_markup("[highlight]goal[/highlight] running; press [warning]q[/warning] to halt this goal and return to chat.")
         try:
@@ -629,6 +766,8 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                     self._goal_messages(goal, cycle),
                     max_iterations=MAX_GOAL_TOOL_ITERATIONS,
                     stop_checker=self._goal_should_stop,
+                    loop_kind="goal",
+                    goal_id=goal["id"],
                 )
                 if response:
                     terminal_theme.print_markup(response)
@@ -660,6 +799,8 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         finally:
             if cleanup_key_watcher:
                 cleanup_key_watcher()
+            if cleanup_idle_watchdog:
+                cleanup_idle_watchdog()
         goal = self.goal_store.get(self.current_goal["id"])
         if goal.get("status") == "running":
             goal = self.goal_store.update(goal["id"], status="active")

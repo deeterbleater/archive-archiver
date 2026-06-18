@@ -625,6 +625,18 @@ def handle_dashboard(args):
         interval=args.interval,
     )
 
+
+def handle_agent_status(args):
+    row = db.add_agent_status(
+        " ".join(args.message),
+        session_id=args.session_id,
+        loop_kind=args.loop_kind,
+        phase=args.phase,
+        model=args.status_model,
+        goal_id=args.goal_id,
+    )
+    print(f"[+] agent status #{row['id']} {row['created_at']}: {row['message']}")
+
 def main():
     # Initialize DB first
     db.init_db()
@@ -727,6 +739,15 @@ def main():
     parser_dashboard.add_argument("--watch", action="store_true", help="Continuously refresh the dashboard.")
     parser_dashboard.add_argument("--interval", type=float, default=2.0, help="Refresh interval in seconds for --watch.")
 
+    # Agent status log command
+    parser_agent_status = subparsers.add_parser("agent-status", help="Write a short agent status update for live dashboards.")
+    parser_agent_status.add_argument("message", nargs="+", help="One or two sentence status update.")
+    parser_agent_status.add_argument("--session-id", help="Agent session identifier.")
+    parser_agent_status.add_argument("--loop-kind", default="manual", help="Loop type, e.g. chat, goal, or manual.")
+    parser_agent_status.add_argument("--phase", default="update", help="Status phase, e.g. start, end, halted, or error.")
+    parser_agent_status.add_argument("--model", dest="status_model", help="Model associated with this status.")
+    parser_agent_status.add_argument("--goal-id", help="Goal identifier associated with this status.")
+
     # Interactive Agent Harness
     parser_agent = subparsers.add_parser("agent", help="Open an interactive terminal harness for directing the archiver.")
     parser_agent.add_argument(
@@ -737,7 +758,7 @@ def main():
     )
     
     args = parser.parse_args()
-    if not os.getenv("ALGE_NO_BANNER") and args.command != "dashboard":
+    if not os.getenv("ALGE_NO_BANNER") and args.command not in ("dashboard", "agent-status"):
         print_banner()
     
     if args.command == "search":
@@ -760,6 +781,8 @@ def main():
         handle_corpus(args)
     elif args.command == "dashboard":
         handle_dashboard(args)
+    elif args.command == "agent-status":
+        handle_agent_status(args)
     elif args.command == "agent":
         agent.run_agent(sys.modules[__name__], command=args.agent_command)
 

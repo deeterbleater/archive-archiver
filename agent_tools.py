@@ -1,7 +1,10 @@
 import contextlib
 import io
 import json
+import os
 import re
+import signal
+import threading
 from types import SimpleNamespace
 import urllib.parse
 
@@ -13,6 +16,42 @@ import goals
 import processor
 import requests
 from bs4 import BeautifulSoup
+
+
+DEFAULT_TOOL_TIMEOUT_SECONDS = int(os.getenv("ALGE_TOOL_TIMEOUT_SECONDS", "180"))
+TOOL_TIMEOUTS = {
+    "web_search": int(os.getenv("ALGE_WEB_SEARCH_TIMEOUT_SECONDS", "45")),
+    "search": int(os.getenv("ALGE_SEARCH_TIMEOUT_SECONDS", str(DEFAULT_TOOL_TIMEOUT_SECONDS))),
+    "ingest_url": int(os.getenv("ALGE_INGEST_URL_TIMEOUT_SECONDS", str(DEFAULT_TOOL_TIMEOUT_SECONDS))),
+    "research": int(os.getenv("ALGE_RESEARCH_TIMEOUT_SECONDS", "240")),
+}
+
+
+class ToolTimeoutError(TimeoutError):
+    pass
+
+
+@contextlib.contextmanager
+def _tool_timeout(tool_name):
+    seconds = TOOL_TIMEOUTS.get(tool_name)
+    if not seconds or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _raise_timeout(_signum, _frame):
+        raise ToolTimeoutError(f"{tool_name} exceeded {seconds}s timeout")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, _raise_timeout)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
 
 TOOL_SCHEMAS = [
@@ -257,9 +296,33 @@ class AppToolRunner:
         if name not in handlers:
             return {"ok": False, "error": f"unknown tool: {name}"}
         try:
-            return handlers[name](**(arguments or {}))
+            with _tool_timeout(name):
+                return handlers[name](**(arguments or {}))
+        except ToolTimeoutError as exc:
+            timeout_seconds = TOOL_TIMEOUTS.get(name)
+            message = f"{name} did not finish within {timeout_seconds}s; the operation was stopped so the agent can continue."
+            self._report_tool_problem(name, message)
+            return {
+                "ok": False,
+                "error": message,
+                "error_type": "timeout",
+                "tool": name,
+                "timeout_seconds": timeout_seconds,
+                "retryable": True,
+            }
         except Exception as exc:
-            return {"ok": False, "error": str(exc), "tool": name}
+            message = f"{type(exc).__name__}: {exc}"
+            self._report_tool_problem(name, message)
+            return {"ok": False, "error": message, "error_type": type(exc).__name__, "tool": name}
+
+    def _report_tool_problem(self, name, message):
+        print(f"[!] Tool {name} failed: {message}", flush=True)
+        if hasattr(self.shell, "_log_agent_status"):
+            self.shell._log_agent_status(
+                f"Tool {name} failed: {message}",
+                loop_kind="tool",
+                phase="error",
+            )
 
     def _capture(self, func, args):
         output = io.StringIO()
@@ -278,6 +341,12 @@ class AppToolRunner:
         return {"ok": True, "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
 
     def web_search(self, query, limit=5):
+        if hasattr(self.shell, "_log_agent_status"):
+            self.shell._log_agent_status(
+                f"Searching the public web for '{query}'.",
+                loop_kind="tool",
+                phase="start",
+            )
         brave = self._brave_search(query, limit=limit)
         if brave.get("ok") and brave.get("results"):
             return brave
@@ -305,7 +374,7 @@ class AppToolRunner:
             )
             response.raise_for_status()
         except Exception as exc:
-            return {"ok": False, "engine": "brave", "error": str(exc), "query": query}
+            return {"ok": False, "engine": "brave", "error": str(exc), "error_type": type(exc).__name__, "query": query}
 
         soup = BeautifulSoup(response.text, "html.parser")
         results = []
@@ -349,7 +418,7 @@ class AppToolRunner:
             )
             response.raise_for_status()
         except Exception as exc:
-            return {"ok": False, "engine": "duckduckgo", "error": str(exc), "query": query}
+            return {"ok": False, "engine": "duckduckgo", "error": str(exc), "error_type": type(exc).__name__, "query": query}
 
         soup = BeautifulSoup(response.text, "html.parser")
         results = []

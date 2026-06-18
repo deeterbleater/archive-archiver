@@ -152,6 +152,19 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_statuses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        loop_kind TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        message TEXT NOT NULL,
+        model TEXT,
+        goal_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     _ensure_column(cursor, "downloads", "final_url", "TEXT")
     _ensure_column(cursor, "downloads", "etag", "TEXT")
     _ensure_column(cursor, "downloads", "last_modified", "TEXT")
@@ -237,6 +250,58 @@ def init_db():
     
     conn.commit()
     conn.close()
+
+
+def _agent_status_row(row):
+    return dict(row) if row else None
+
+
+def add_agent_status(message, session_id=None, loop_kind="agent", phase="update", model=None, goal_id=None):
+    """Persist a short status update for the live agent dashboard."""
+    normalized = " ".join(str(message or "").split())
+    if not normalized:
+        normalized = "Agent loop updated."
+    if len(normalized) > 500:
+        normalized = normalized[:497].rstrip() + "..."
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO agent_statuses (session_id, loop_kind, phase, message, model, goal_id)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        session_id,
+        str(loop_kind or "agent"),
+        str(phase or "update"),
+        normalized,
+        model,
+        goal_id,
+    ))
+    status_id = cursor.lastrowid
+    conn.commit()
+    cursor.execute("SELECT * FROM agent_statuses WHERE id = ?", (status_id,))
+    row = _agent_status_row(cursor.fetchone())
+    conn.close()
+    return row
+
+
+def get_latest_agent_status():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM agent_statuses ORDER BY id DESC LIMIT 1")
+    row = _agent_status_row(cursor.fetchone())
+    conn.close()
+    return row
+
+
+def get_recent_agent_statuses(limit=20):
+    limit = max(1, min(int(limit or 20), 100))
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM agent_statuses ORDER BY id DESC LIMIT ?", (limit,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
 
 
 def ensure_category(name, description=None, keywords=None, dynamic=True):

@@ -1,10 +1,12 @@
 import io
 import os
+import time
 from unittest import mock
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 import agent
 import agent_tools
@@ -165,6 +167,68 @@ class AgentHarnessTests(unittest.TestCase):
             llm.chat_completion = original_chat_completion
 
         self.assertIn("halted by operator", result)
+
+    def test_chat_loop_logs_agent_status_rows(self):
+        completion = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ready", tool_calls=[])
+                )
+            ]
+        )
+        with mock.patch("llm.chat_completion", return_value=completion):
+            result = self.shell._run_llm_tool_loop(
+                [{"role": "user", "content": "status please"}],
+                loop_kind="chat",
+            )
+
+        rows = db.get_recent_agent_statuses(limit=2)
+        self.assertEqual(result, "ready")
+        self.assertEqual(rows[0]["phase"], "end")
+        self.assertEqual(rows[1]["phase"], "start")
+        self.assertEqual(rows[0]["session_id"], self.shell.session_id)
+
+    def test_tool_timeout_returns_error_and_logs_status(self):
+        original_timeout = agent_tools.TOOL_TIMEOUTS["search"]
+        agent_tools.TOOL_TIMEOUTS["search"] = 1
+
+        def slow_search(**_kwargs):
+            time.sleep(2)
+            return {"ok": True}
+
+        try:
+            with mock.patch.object(self.shell.tools, "search", side_effect=slow_search):
+                result = self.shell.tools.execute("search", {"query": "stuck"})
+        finally:
+            agent_tools.TOOL_TIMEOUTS["search"] = original_timeout
+
+        latest = db.get_latest_agent_status()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "timeout")
+        self.assertEqual(result["timeout_seconds"], 1)
+        self.assertEqual(latest["phase"], "error")
+        self.assertIn("Tool search failed", latest["message"])
+
+    def test_goal_idle_watchdog_logs_idle_status(self):
+        original_warning_seconds = agent.IDLE_WARNING_SECONDS
+        original_interval = agent.IDLE_WATCHDOG_INTERVAL_SECONDS
+        agent.IDLE_WARNING_SECONDS = 1
+        agent.IDLE_WATCHDOG_INTERVAL_SECONDS = 0.05
+        self.shell._agent_last_activity = time.monotonic() - 2
+        self.shell._agent_current_operation = "test operation"
+
+        try:
+            cleanup = self.shell._start_goal_idle_watchdog("goal-id")
+            time.sleep(0.2)
+            cleanup()
+        finally:
+            agent.IDLE_WARNING_SECONDS = original_warning_seconds
+            agent.IDLE_WATCHDOG_INTERVAL_SECONDS = original_interval
+
+        latest = db.get_latest_agent_status()
+        self.assertEqual(latest["phase"], "idle")
+        self.assertEqual(latest["goal_id"], "goal-id")
+        self.assertIn("test operation", latest["message"])
 
     @unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is required for live compaction")
     def test_forced_compaction_creates_summary(self):

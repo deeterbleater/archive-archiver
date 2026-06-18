@@ -136,6 +136,32 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(category["dynamic"], 1)
         self.assertIn("thelema", category["keywords_json"])
 
+    def test_agent_status_endpoints_return_latest_and_recent_rows(self):
+        first = db.add_agent_status(
+            "Starting goal loop 1 with qwen/qwen3.7-plus.",
+            session_id="test-session",
+            loop_kind="goal",
+            phase="start",
+            model="qwen/qwen3.7-plus",
+            goal_id="goal-1",
+        )
+        second = db.add_agent_status(
+            "Finished goal loop 1 after 2 tool calls.",
+            session_id="test-session",
+            loop_kind="goal",
+            phase="end",
+            model="qwen/qwen3.7-plus",
+            goal_id="goal-1",
+        )
+
+        latest = self.api.latest_agent_status()
+        recent = self.api.recent_agent_status(limit=2)
+
+        self.assertEqual(latest["id"], second["id"])
+        self.assertEqual(latest["message"], second["message"])
+        self.assertEqual(recent[0]["id"], second["id"])
+        self.assertEqual(recent[1]["id"], first["id"])
+
 
 if __name__ == "__main__":
     unittest.main()
