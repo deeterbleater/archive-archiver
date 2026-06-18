@@ -140,11 +140,26 @@ ln -sf /root/archive-archiver/bin/alge /usr/local/bin/alge
 ```
 
 The harness gives you an `alge>` prompt for directing the pipeline without
-remembering every full command. Common commands include:
+remembering every full command. Anything typed without a leading slash is sent
+to the active OpenRouter model as part of the ongoing conversation. The model
+can call app tools for status, discovery, direct URL ingestion, research,
+downloads, plaintext processing, raw-object archival, corpus builds, and backlog
+draining. Natural-language requests can run continuous task loops:
+
+```text
+download all backlogged works and process them
+drain the backlog, archive raw originals after text extraction, and tell me what stalled
+search archive.org for public domain labor history and add the results
+build a corpus called egoism-v1 from processed egoism texts
+```
+
+Common slash commands include:
 
 ```text
 /status
 /config
+/model
+/model qwen/qwen3.7-plus
 /set sources archive_org anarchist_library
 /search "max stirner" --max-results 3
 /download --limit 10 --domain-workers
@@ -158,6 +173,11 @@ remembering every full command. Common commands include:
 /exit
 ```
 
+Use `/model` to fetch OpenRouter's live model catalog and choose from a
+paginated terminal picker. It shows 20 models at a time; use the arrow keys to
+move between pages and enter a number to select. Use `/model MODEL_ID` when
+running non-interactively.
+
 Run one harness command without entering the prompt:
 
 ```sh
@@ -170,6 +190,8 @@ The `alge` harness saves command context and operator notes to
 `logs/agent_memory.jsonl`. Use slash commands to work with that memory:
 
 ```text
+/model
+/model qwen/qwen3.7-plus
 /remember TEXT
 /memory --limit 20
 /memory --search TEXT
@@ -185,7 +207,7 @@ local estimate is large enough to need compaction, and falls back to a 32k-token
 window if metadata is unavailable. You can tune this per session:
 
 ```text
-/set model z-ai/glm-5.2
+/set model qwen/qwen3.7-plus
 /set compaction-ratio 0.55
 /set memory-path logs/agent_memory.jsonl
 ```

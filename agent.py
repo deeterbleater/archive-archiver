@@ -1,9 +1,14 @@
 import argparse
 import cmd
+import json
 import shlex
+import sys
+import termios
+import tty
 from types import SimpleNamespace
 
 import corpus
+import agent_tools
 import downloader
 import llm
 import memory
@@ -20,6 +25,7 @@ SLASH_COMMANDS = {
     "/slash": "slash",
     "/status": "status",
     "/config": "config",
+    "/model": "model",
     "/set": "set",
     "/search": "search",
     "/url": "url",
@@ -37,7 +43,19 @@ SLASH_COMMANDS = {
     "/quit": "quit",
 }
 
-MEMORY_COMMANDS = {"memory", "remember", "compact", "context", "help", "slash", "config"}
+MEMORY_COMMANDS = {"memory", "remember", "compact", "context", "help", "slash", "config", "model"}
+CHAT_KINDS = {"summary", "note", "user", "assistant"}
+MODEL_PAGE_SIZE = 20
+
+
+SYSTEM_PROMPT = """
+You are ALGE, a terminal-native archive operations assistant inside the archive-archiver project.
+You can talk normally and you also have tools that operate the archive app: status, backlog, search, ingest_url, research, download, process, archive_raw, run_backlog_until_done, and build_corpus.
+Use tools when the user asks you to perform app work. For example, "download all backlogged works and process them" should call run_backlog_until_done.
+For long tasks, keep working through tool calls until the requested task is complete, stalled, or blocked by a clear error. Report concrete counts and stopping reason.
+Slash commands such as /status, /search, /download, /process, /archive-raw, /cycle, /corpus, /memory, /context, and /model are still direct operator controls.
+""".strip()
+MAX_TOOL_ITERATIONS = 12
 
 
 def _parser(prog, description=None):
@@ -84,6 +102,7 @@ class ArchiveAgentShell(cmd.Cmd):
             path=self.config["memory_path"],
             compaction_ratio=self.config["compaction_ratio"],
         )
+        self.tools = agent_tools.AppToolRunner(self)
 
     def _run_parser(self, parser, line):
         argv = _split(line)
@@ -105,6 +124,43 @@ class ArchiveAgentShell(cmd.Cmd):
         values.update(overrides)
         return SimpleNamespace(**values)
 
+    def _active_model(self):
+        return self.config["model"] or llm.DEFAULT_MODEL
+
+    def _chat_messages(self, user_text):
+        context_length = self.memory.model_context_length(model=self._active_model())
+        budget = max(2000, int(context_length * 0.65))
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        used = memory.estimate_tokens(SYSTEM_PROMPT) + memory.estimate_tokens(user_text)
+
+        rows = [
+            row for row in self.memory.entries()
+            if row.get("kind") in CHAT_KINDS
+        ]
+        selected = []
+        for row in reversed(rows):
+            content = row.get("content", "")
+            tokens = memory.estimate_tokens(content)
+            if used + tokens > budget:
+                break
+            selected.append(row)
+            used += tokens
+
+        for row in reversed(selected):
+            kind = row.get("kind")
+            content = row.get("content", "")
+            if kind == "assistant":
+                messages.append({"role": "assistant", "content": content})
+            elif kind == "user":
+                messages.append({"role": "user", "content": content})
+            elif kind == "summary":
+                messages.append({"role": "system", "content": f"Prior context summary:\n{content}"})
+            elif kind == "note":
+                messages.append({"role": "system", "content": f"Operator note:\n{content}"})
+
+        messages.append({"role": "user", "content": user_text})
+        return messages
+
     def _normalize_command(self, line):
         stripped = line.strip()
         if not stripped.startswith("/"):
@@ -119,6 +175,11 @@ class ArchiveAgentShell(cmd.Cmd):
         return mapped
 
     def onecmd(self, line):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("/"):
+            self._chat(stripped)
+            return None
+
         normalized = self._normalize_command(line)
         command_name = normalized.strip().split(" ", 1)[0] if normalized.strip() else ""
         result = super().onecmd(normalized)
@@ -144,8 +205,78 @@ class ArchiveAgentShell(cmd.Cmd):
             print(f"[!] Unknown slash command: {line.strip()}")
             print("    Type /help to see available slash commands.")
             return
-        print(f"[!] Unknown command: {line}")
-        print("    Type /help to see available commands.")
+        self._chat(line.strip())
+
+    def _chat(self, line):
+        if not line:
+            return
+        messages = self._chat_messages(line)
+        self.memory.append("user", line, {"model": self._active_model()})
+        try:
+            response = self._run_llm_tool_loop(messages)
+        except Exception as exc:
+            print(f"[!] OpenRouter chat error: {exc}")
+            return
+
+        if response:
+            print(response)
+            self.memory.append("assistant", response, {"model": self._active_model()})
+        self._auto_compact()
+
+    def _run_llm_tool_loop(self, messages):
+        final_text = None
+        for _iteration in range(MAX_TOOL_ITERATIONS):
+            completion = llm.chat_completion(
+                messages,
+                model=self._active_model(),
+                tools=agent_tools.TOOL_SCHEMAS,
+            )
+            message = completion.choices[0].message
+            tool_calls = getattr(message, "tool_calls", None) or []
+            content = (message.content or "").strip() if message.content else ""
+
+            if not tool_calls:
+                return content
+
+            assistant_message = {"role": "assistant", "content": message.content or "", "tool_calls": []}
+            tool_messages = []
+            if content:
+                print(content)
+
+            for call in tool_calls:
+                function = call.function
+                try:
+                    arguments = json.loads(function.arguments or "{}")
+                except json.JSONDecodeError as exc:
+                    arguments = {}
+                    result = {"ok": False, "error": f"invalid tool arguments: {exc}"}
+                else:
+                    print(f"[agent] {function.name}({arguments})")
+                    result = self.tools.execute(function.name, arguments)
+
+                self.memory.append("tool", function.name, {"arguments": arguments, "result": result})
+                assistant_message["tool_calls"].append({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": function.name,
+                        "arguments": function.arguments or "{}",
+                    },
+                })
+                tool_messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": agent_tools.dumps_tool_result(result),
+                })
+                final_text = agent_tools.dumps_tool_result(result)
+
+            messages.append(assistant_message)
+            messages.extend(tool_messages)
+
+        return (
+            "I stopped after the tool-iteration limit. Last tool result:\n"
+            f"{final_text or 'no tool result'}"
+        )
 
     def do_exit(self, _line):
         """Leave the agent harness."""
@@ -169,6 +300,128 @@ class ArchiveAgentShell(cmd.Cmd):
                 value = ", ".join(value)
             print(f"{key}: {value}")
         print("=================================================")
+
+    def _model_rows(self, refresh=False):
+        payload = self.memory.fetch_model_specs(force=refresh)
+        rows = []
+        for item in payload.get("data", []):
+            model_id = item.get("id") or item.get("canonical_slug")
+            if not model_id:
+                continue
+            provider = item.get("top_provider") or {}
+            context_length = provider.get("context_length") or item.get("context_length") or "?"
+            rows.append({
+                "id": model_id,
+                "name": item.get("name") or model_id,
+                "context_length": context_length,
+            })
+        rows.sort(key=lambda row: row["id"])
+        return rows
+
+    def _print_model_page(self, rows, page):
+        page_count = max(1, (len(rows) + MODEL_PAGE_SIZE - 1) // MODEL_PAGE_SIZE)
+        page = max(0, min(page, page_count - 1))
+        start = page * MODEL_PAGE_SIZE
+        visible = rows[start:start + MODEL_PAGE_SIZE]
+        print("\n================ OPENROUTER MODELS ==============")
+        print(f"active: {self._active_model()}")
+        print(f"page: {page + 1}/{page_count}  models: {len(rows)}")
+        for offset, row in enumerate(visible, start=1):
+            marker = "*" if row["id"] == self._active_model() else " "
+            print(f"{marker} {offset:>2}. {row['id']}  ctx={row['context_length']}")
+        print("Use left/right or up/down arrows to page, number + Enter to select, q to quit.")
+        print("=================================================")
+        return page
+
+    def _read_model_selection(self, rows):
+        stream = self.stdin or sys.stdin
+        if not hasattr(stream, "isatty") or not stream.isatty():
+            self._print_model_page(rows, 0)
+            print("[!] Interactive model selection requires a TTY. Use /model MODEL_ID instead.")
+            return None
+
+        page = 0
+        buffer = ""
+        fd = stream.fileno()
+        old_attrs = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while True:
+                page = self._print_model_page(rows, page)
+                if buffer:
+                    print(f"selection: {buffer}")
+                key = stream.read(1)
+                if key == "\x03":
+                    print()
+                    return None
+                if key in ("\r", "\n"):
+                    if not buffer:
+                        continue
+                    selected = int(buffer)
+                    index = page * MODEL_PAGE_SIZE + selected - 1
+                    if selected < 1 or selected > MODEL_PAGE_SIZE or index >= len(rows):
+                        print(f"\n[!] Selection out of range: {buffer}")
+                        buffer = ""
+                        continue
+                    print()
+                    return rows[index]["id"]
+                if key in ("q", "Q", "\x1b"):
+                    if key == "\x1b":
+                        rest = stream.read(2)
+                        if rest in ("[C", "[B"):
+                            page += 1
+                            buffer = ""
+                            continue
+                        if rest in ("[D", "[A"):
+                            page -= 1
+                            buffer = ""
+                            continue
+                    print()
+                    return None
+                if key in ("n", "N"):
+                    page += 1
+                    buffer = ""
+                    continue
+                if key in ("p", "P"):
+                    page -= 1
+                    buffer = ""
+                    continue
+                if key in ("\x7f", "\b"):
+                    buffer = buffer[:-1]
+                    continue
+                if key.isdigit():
+                    buffer = (buffer + key)[:2]
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+    def do_model(self, line):
+        """Choose the active OpenRouter model: /model [--refresh] [MODEL_ID]."""
+        parser = _parser("model")
+        parser.add_argument("--refresh", action="store_true")
+        parser.add_argument("model", nargs="?")
+        args = self._run_parser(parser, line)
+        if not args:
+            return
+
+        if args.model:
+            self.config["model"] = args.model
+            print(f"[+] model updated: {self.config['model']}")
+            return
+
+        try:
+            rows = self._model_rows(refresh=args.refresh)
+        except Exception as exc:
+            print(f"[!] Could not load OpenRouter models: {exc}")
+            return
+        if not rows:
+            print("[!] OpenRouter returned no models.")
+            return
+
+        selected = self._read_model_selection(rows)
+        if selected:
+            self.config["model"] = selected
+            context_length = self.memory.model_context_length(model=selected)
+            print(f"[+] model updated: {selected} (context {context_length})")
 
     def do_set(self, line):
         """Set a session default: /set model MODEL | /set max-results N | /set sources archive_org anarchist_library."""
@@ -226,6 +479,7 @@ Slash commands:
   /help
   /status
   /config
+  /model
   /set KEY VALUE
   /search QUERY
   /url URL
@@ -454,6 +708,8 @@ Commands:
       Show database counts and pipeline state.
   /config
       Show session defaults used by agent commands.
+  /model [MODEL_ID]
+      Fetch OpenRouter models and choose the active chat/model-extraction model.
   /set model MODEL
   /set max-results N
   /set sources archive_org anarchist_library
@@ -489,7 +745,7 @@ Commands:
   /exit
       Leave the harness.
 
-Plain command names also work without the slash.
+Normal text without a slash is sent to the active model as chat.
 """.strip())
 
 

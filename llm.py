@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Default free models on OpenRouter
-DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+DEFAULT_MODEL = "qwen/qwen3.7-plus"
 
 def get_openrouter_client():
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -19,6 +19,48 @@ def get_openrouter_client():
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key
     )
+
+def chat_with_llm(messages, model=None, temperature=0.4):
+    """
+    Send an ongoing harness conversation to OpenRouter and return assistant text.
+    """
+    if not model:
+        model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+
+    client = get_openrouter_client()
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/deeterbleater/archive-archiver",
+            "X-Title": "ALGE Archive Harness",
+        },
+        temperature=temperature,
+    )
+    return response.choices[0].message.content.strip()
+
+
+def chat_completion(messages, model=None, tools=None, temperature=0.4):
+    """
+    Return the raw OpenRouter chat completion for harness tool-calling loops.
+    """
+    if not model:
+        model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
+
+    client = get_openrouter_client()
+    kwargs = {
+        "model": model,
+        "messages": messages,
+        "extra_headers": {
+            "HTTP-Referer": "https://github.com/deeterbleater/archive-archiver",
+            "X-Title": "ALGE Archive Harness",
+        },
+        "temperature": temperature,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    return client.chat.completions.create(**kwargs)
 
 def parse_page_with_llm(cleaned_html, url, model=None):
     """
@@ -210,4 +252,3 @@ Return ONLY the Markdown content. Do not add conversational intro/outro text.
     except Exception as e:
         print(f"[!] Report generation error: {e}")
         return None
-

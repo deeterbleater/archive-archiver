@@ -284,6 +284,53 @@ def get_stats():
         "total_corpus_builds": total_corpus_builds,
     }
 
+
+def get_backlog_counts(extractor="plaintext.v2"):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM files
+    LEFT JOIN downloads ON downloads.file_id = files.id
+    WHERE
+        COALESCE(files.download_url, files.url, '') <> ''
+        AND (downloads.id IS NULL OR downloads.status = 'failed')
+    """)
+    pending_downloads = cursor.fetchone()[0]
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM downloads
+    LEFT JOIN extractions
+      ON extractions.download_id = downloads.id
+     AND extractions.extractor = ?
+    WHERE
+        downloads.status = 'downloaded'
+        AND (extractions.id IS NULL OR extractions.status = 'failed')
+    """, (extractor,))
+    pending_extractions = cursor.fetchone()[0]
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM downloads
+    JOIN extractions ON extractions.download_id = downloads.id
+    WHERE
+        downloads.status = 'downloaded'
+        AND downloads.bucket_uri LIKE 'file:%'
+        AND downloads.raw_archive_uri IS NULL
+        AND downloads.local_raw_deleted_at IS NULL
+        AND extractions.status = 'processed'
+    """)
+    pending_raw_archives = cursor.fetchone()[0]
+
+    conn.close()
+    return {
+        "pending_downloads": pending_downloads,
+        "pending_extractions": pending_extractions,
+        "pending_raw_archives": pending_raw_archives,
+    }
+
 def get_pending_download_files(limit=10):
     """Returns file records that have not been downloaded successfully."""
     conn = get_connection()

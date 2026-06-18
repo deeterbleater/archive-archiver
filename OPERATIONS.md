@@ -285,11 +285,14 @@ Install a global `alge` command on this server:
 ln -sf /root/archive-archiver/bin/alge /usr/local/bin/alge
 ```
 
-Useful harness commands:
+Useful harness input:
 
 ```text
+what should I collect next for an egoist corpus?
 /status
 /config
+/model
+/model qwen/qwen3.7-plus
 /set max-results 2
 /set sources archive_org anarchist_library
 /search "public domain political economy"
@@ -310,6 +313,19 @@ Run one harness command non-interactively:
 alge -c "/status"
 ```
 
+Lines without a leading slash are sent directly to the active OpenRouter model
+and saved into the continuing context log with assistant replies. Slash commands
+remain operational controls. `/model` fetches the live OpenRouter model catalog,
+shows 20 entries per page, and accepts arrow-key page navigation plus numeric
+selection; `/model MODEL_ID` sets a model directly.
+
+The chat model can call app tools for status, backlog inspection, search, direct
+URL ingestion, research, downloads, plaintext processing, raw-object archival,
+and corpus builds. For requests such as `download all backlogged works and
+process them`, it should call the continuous backlog loop and keep iterating
+until the backlog is complete, progress stalls, or a tool reports a concrete
+error.
+
 Harness memory:
 
 - Saved context log: `logs/agent_memory.jsonl`
@@ -320,6 +336,8 @@ Harness memory:
 Useful memory commands:
 
 ```text
+/model
+/model qwen/qwen3.7-plus
 /remember TEXT
 /memory --search TEXT
 /context

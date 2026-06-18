@@ -1,10 +1,12 @@
 import io
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
 import agent
+import agent_tools
 import cli
 import db
 import memory
@@ -55,11 +57,23 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("Unknown slash command", output)
 
-    def test_plain_commands_still_work(self):
-        result, output = self._run("config")
+    @unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is required for live chat")
+    def test_plain_text_enters_chat_path(self):
+        result, output = self._run("remember this preference")
 
         self.assertIsNone(result)
-        self.assertIn("AGENT CONFIG", output)
+        self.assertNotIn("Unknown command", output)
+        rows = self.shell.memory.entries()
+        self.assertTrue(
+            any(row["kind"] == "user" and row["content"] == "remember this preference" for row in rows)
+        )
+
+    def test_model_command_sets_exact_model(self):
+        result, output = self._run("/model qwen/qwen3.7-plus")
+
+        self.assertIsNone(result)
+        self.assertEqual(self.shell.config["model"], "qwen/qwen3.7-plus")
+        self.assertIn("model updated", output)
 
     def test_memory_commands_save_and_read_context(self):
         self._run("/remember prioritize archive.org texts")
@@ -68,10 +82,19 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("prioritize archive.org texts", output)
 
+    def test_backlog_tool_completes_when_empty(self):
+        runner = agent_tools.AppToolRunner(self.shell)
+        result = runner.run_backlog_until_done(max_cycles=3)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "complete")
+        self.assertEqual(result["backlog"]["pending_downloads"], 0)
+        self.assertEqual(result["backlog"]["pending_extractions"], 0)
+
+    @unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is required for live compaction")
     def test_forced_compaction_creates_summary(self):
         self._run("/remember first note")
         self._run("/remember second note")
-        self.shell.memory._summarize = lambda rows, model=None: "test summary"
         result, compact_output = self._run("/compact --force")
         _, memory_output = self._run("/memory --limit 5")
 
