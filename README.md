@@ -182,6 +182,7 @@ Common slash commands include:
 /memory --search archive.org
 /context --refresh
 /compact --force
+/goal --run --forever --sleep-seconds 300 "Find everything anyone has ever said about Thelema and put what you find through the entire archival workflow."
 /exit
 ```
 
@@ -223,6 +224,24 @@ window if metadata is unavailable. You can tune this per session:
 /set compaction-ratio 0.55
 /set memory-path logs/agent_memory.jsonl
 ```
+
+## Long-Running Goals
+
+Use `/goal` for durable archival jobs that may run for many cycles:
+
+```text
+/goal "Find me everything anyone has ever said about Thelema and put what you find through the entire archival workflow."
+/goal --run --forever --sleep-seconds 300 "Find me everything anyone has ever said about Thelema and put what you find through the entire archival workflow."
+/goal --status
+/goal --resume GOAL_ID --run --max-cycles 10
+/goal --stop GOAL_ID
+```
+
+Goal state is saved to `logs/agent_goals.json`. During a goal run the model can
+use web search for outside context, search archive sources, download/process raw
+files, archive originals to object storage, build corpora, and set an estimated
+completion timer. Interrupting a foreground goal run leaves the goal active so
+it can be resumed later.
 
 ## Local Buckets
 

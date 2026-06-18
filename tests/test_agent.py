@@ -9,6 +9,7 @@ import agent
 import agent_tools
 import cli
 import db
+import goals
 import memory
 
 
@@ -22,6 +23,8 @@ class AgentHarnessTests(unittest.TestCase):
         memory_path = Path(self.tempdir.name) / "memory.jsonl"
         self.shell.config["memory_path"] = str(memory_path)
         self.shell.memory = memory.MemoryStore(path=memory_path)
+        goal_path = Path(self.tempdir.name) / "goals.json"
+        self.shell.goal_store = goals.GoalStore(path=goal_path)
 
     def tearDown(self):
         db.DB_FILE = self.old_db_file
@@ -90,6 +93,26 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(result["reason"], "complete")
         self.assertEqual(result["backlog"]["pending_downloads"], 0)
         self.assertEqual(result["backlog"]["pending_extractions"], 0)
+
+    def test_goal_command_creates_durable_goal(self):
+        result, output = self._run("/goal Find everything about Thelema")
+
+        self.assertIsNone(result)
+        self.assertIn("GOAL", output)
+        stored = self.shell.goal_store.list()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["status"], "active")
+        self.assertEqual(stored[0]["objective"], "Find everything about Thelema")
+
+    def test_goal_timer_tool_updates_active_goal(self):
+        goal = self.shell.goal_store.create("Archive Thelema materials")
+        self.shell.current_goal = goal
+        result = self.shell.tools.set_goal_timer("2h", "initial estimate")
+
+        self.assertTrue(result["ok"])
+        updated = self.shell.goal_store.get(goal["id"])
+        self.assertIsNotNone(updated["estimated_completion_at"])
+        self.assertEqual(result["duration_seconds"], 7200)
 
     @unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is required for live compaction")
     def test_forced_compaction_creates_summary(self):

@@ -307,6 +307,7 @@ what should I collect next for an egoist corpus?
 /memory --limit 20
 /context --refresh
 /compact --force
+/goal --run --max-cycles 1 "Find everything anyone has ever said about Thelema and put what you find through the entire archival workflow."
 /exit
 ```
 
@@ -328,6 +329,20 @@ and corpus builds. For requests such as `download all backlogged works and
 process them`, it should call the continuous backlog loop and keep iterating
 until the backlog is complete, progress stalls, or a tool reports a concrete
 error.
+
+Durable goals:
+
+- Goal log: `logs/agent_goals.json`
+- `/goal OBJECTIVE`: create a resumable goal.
+- `/goal --run --forever --sleep-seconds 300 OBJECTIVE`: run cycles until the
+  goal is complete, blocked, stopped, or interrupted.
+- `/goal --resume GOAL_ID --run --max-cycles 10`: continue a stored goal.
+- `/goal --status`: show active/recent goals and ETA timer.
+- `/goal --stop GOAL_ID`: stop a goal.
+
+Goal runs expose web search and an estimated-completion timer tool to the model.
+If the foreground process is interrupted, the goal returns to `active` and can
+be resumed.
 
 Harness memory:
 

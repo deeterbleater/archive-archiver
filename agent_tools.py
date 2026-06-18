@@ -1,12 +1,17 @@
 import contextlib
 import io
 import json
+import re
 from types import SimpleNamespace
+import urllib.parse
 
 import corpus
 import db
 import downloader
+import goals
 import processor
+import requests
+from bs4 import BeautifulSoup
 
 
 TOOL_SCHEMAS = [
@@ -37,6 +42,22 @@ TOOL_SCHEMAS = [
                     "query": {"type": "string"},
                     "max_results": {"type": "integer", "minimum": 1, "maximum": 25},
                     "sources": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the public web for context, leads, sources, and search terms that are not already known to the archive app.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 10},
                 },
                 "required": ["query"],
                 "additionalProperties": False,
@@ -152,6 +173,38 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_goal_timer",
+            "description": "Set or update the active goal's estimated completion timer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration": {"type": "string", "description": "Relative duration such as 30m, 6h, or 2d."},
+                    "reason": {"type": "string"},
+                },
+                "required": ["duration"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finish_goal",
+            "description": "Mark the active goal complete or blocked with a concrete reason.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["complete", "blocked"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["status", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -163,6 +216,7 @@ class AppToolRunner:
         handlers = {
             "status": self.status,
             "backlog": self.backlog,
+            "web_search": self.web_search,
             "search": self.search,
             "ingest_url": self.ingest_url,
             "research": self.research,
@@ -171,6 +225,8 @@ class AppToolRunner:
             "archive_raw": self.archive_raw,
             "run_backlog_until_done": self.run_backlog_until_done,
             "build_corpus": self.build_corpus,
+            "set_goal_timer": self.set_goal_timer,
+            "finish_goal": self.finish_goal,
         }
         if name not in handlers:
             return {"ok": False, "error": f"unknown tool: {name}"}
@@ -194,6 +250,100 @@ class AppToolRunner:
 
     def backlog(self):
         return {"ok": True, "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
+
+    def web_search(self, query, limit=5):
+        brave = self._brave_search(query, limit=limit)
+        if brave.get("ok") and brave.get("results"):
+            return brave
+        duck = self._duckduckgo_search(query, limit=limit)
+        if duck.get("ok") and duck.get("results"):
+            return duck
+        return {
+            "ok": False,
+            "query": query,
+            "error": "no web search results returned",
+            "attempts": [brave, duck],
+        }
+
+    def _brave_search(self, query, limit=5):
+        url = "https://search.brave.com/search"
+        try:
+            response = requests.get(
+                url,
+                params={"q": query, "source": "web"},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            return {"ok": False, "engine": "brave", "error": str(exc), "query": query}
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+        seen = set()
+        for link in soup.select('a[href^="http"]'):
+            href = link.get("href")
+            parsed = urllib.parse.urlparse(href)
+            if parsed.netloc.endswith("search.brave.com") or parsed.netloc.startswith("cdn."):
+                continue
+            text = re.sub(r"\s+", " ", link.get_text(" ", strip=True)).strip()
+            if not text:
+                continue
+            classes = " ".join(link.get("class") or [])
+            if "l1" not in classes and "desktop-heading" not in classes and len(results) >= 1:
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            parent_text = re.sub(r"\s+", " ", link.parent.get_text(" ", strip=True)).strip() if link.parent else ""
+            results.append({
+                "title": text[:240],
+                "url": href,
+                "snippet": parent_text[:500],
+                "engine": "brave",
+            })
+            if len(results) >= limit:
+                break
+        return {"ok": True, "engine": "brave", "query": query, "results": results}
+
+    def _duckduckgo_search(self, query, limit=5):
+        url = "https://html.duckduckgo.com/html/"
+        try:
+            response = requests.get(
+                url,
+                params={"q": query},
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            return {"ok": False, "engine": "duckduckgo", "error": str(exc), "query": query}
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+        for node in soup.select(".result"):
+            link = node.select_one(".result__a")
+            snippet = node.select_one(".result__snippet")
+            if not link:
+                continue
+            href = link.get("href") or ""
+            parsed = urllib.parse.urlparse(href)
+            if parsed.netloc.endswith("duckduckgo.com"):
+                qs = urllib.parse.parse_qs(parsed.query)
+                href = (qs.get("uddg") or [href])[0]
+            title = re.sub(r"\s+", " ", link.get_text(" ", strip=True)).strip()
+            text = re.sub(r"\s+", " ", snippet.get_text(" ", strip=True)).strip() if snippet else ""
+            if title and href:
+                results.append({"title": title, "url": href, "snippet": text})
+            if len(results) >= limit:
+                break
+        return {"ok": True, "engine": "duckduckgo", "query": query, "results": results}
 
     def search(self, query, max_results=None, sources=None):
         args = self._namespace(
@@ -318,6 +468,31 @@ class AppToolRunner:
             output_dir=corpus.DEFAULT_CORPUS_BUCKET_DIR,
         )
         return {"ok": True, "result": result}
+
+    def set_goal_timer(self, duration, reason=None):
+        goal = getattr(self.shell, "current_goal", None)
+        if not goal:
+            return {"ok": False, "error": "no active goal"}
+        seconds = goals.parse_duration(duration)
+        estimated_at = goals.timestamp_after(seconds)
+        updated = self.shell.goal_store.update(goal["id"], estimated_completion_at=estimated_at)
+        self.shell.current_goal = updated
+        self.shell.goal_store.append_event(
+            goal["id"],
+            "timer",
+            f"estimated completion set to {estimated_at}",
+            {"duration": duration, "reason": reason},
+        )
+        return {"ok": True, "estimated_completion_at": estimated_at, "duration_seconds": seconds}
+
+    def finish_goal(self, status, reason):
+        goal = getattr(self.shell, "current_goal", None)
+        if not goal:
+            return {"ok": False, "error": "no active goal"}
+        updated = self.shell.goal_store.update(goal["id"], status=status)
+        self.shell.current_goal = updated
+        self.shell.goal_store.append_event(goal["id"], status, reason)
+        return {"ok": True, "status": status, "reason": reason}
 
 
 def dumps_tool_result(result):

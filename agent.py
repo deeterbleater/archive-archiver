@@ -4,12 +4,14 @@ import json
 import shlex
 import sys
 import termios
+import time
 import tty
 from types import SimpleNamespace
 
 import corpus
 import agent_tools
 import downloader
+import goals
 import llm
 import memory
 import processor
@@ -39,23 +41,27 @@ SLASH_COMMANDS = {
     "/remember": "remember",
     "/compact": "compact",
     "/context": "context",
+    "/goal": "goal",
     "/exit": "exit",
     "/quit": "quit",
 }
 
-MEMORY_COMMANDS = {"memory", "remember", "compact", "context", "help", "slash", "config", "model"}
+MEMORY_COMMANDS = {"memory", "remember", "compact", "context", "help", "slash", "config", "model", "goal"}
 CHAT_KINDS = {"summary", "note", "user", "assistant"}
 MODEL_PAGE_SIZE = 20
 
 
 SYSTEM_PROMPT = """
 You are ALGE, a terminal-native archive operations assistant inside the archive-archiver project.
-You can talk normally and you also have tools that operate the archive app: status, backlog, search, ingest_url, research, download, process, archive_raw, run_backlog_until_done, and build_corpus.
+You can talk normally and you also have tools that operate the archive app: status, backlog, web_search, search, ingest_url, research, download, process, archive_raw, run_backlog_until_done, build_corpus, set_goal_timer, and finish_goal.
 Use tools when the user asks you to perform app work. For example, "download all backlogged works and process them" should call run_backlog_until_done.
+When the user gives a broad archival goal, use web_search to discover terminology, related people, source domains, and query expansions, then use archive search tools and the full download/process/archive workflow.
 For long tasks, keep working through tool calls until the requested task is complete, stalled, or blocked by a clear error. Report concrete counts and stopping reason.
-Slash commands such as /status, /search, /download, /process, /archive-raw, /cycle, /corpus, /memory, /context, and /model are still direct operator controls.
+For explicit /goal work, set an estimated completion timer and call finish_goal only when the objective is complete or clearly blocked.
+Slash commands such as /status, /search, /download, /process, /archive-raw, /cycle, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
 """.strip()
 MAX_TOOL_ITERATIONS = 12
+MAX_GOAL_TOOL_ITERATIONS = 20
 
 
 def _parser(prog, description=None):
@@ -102,6 +108,8 @@ class ArchiveAgentShell(cmd.Cmd):
             path=self.config["memory_path"],
             compaction_ratio=self.config["compaction_ratio"],
         )
+        self.goal_store = goals.GoalStore()
+        self.current_goal = None
         self.tools = agent_tools.AppToolRunner(self)
 
     def _run_parser(self, parser, line):
@@ -223,9 +231,9 @@ class ArchiveAgentShell(cmd.Cmd):
             self.memory.append("assistant", response, {"model": self._active_model()})
         self._auto_compact()
 
-    def _run_llm_tool_loop(self, messages):
+    def _run_llm_tool_loop(self, messages, max_iterations=MAX_TOOL_ITERATIONS):
         final_text = None
-        for _iteration in range(MAX_TOOL_ITERATIONS):
+        for _iteration in range(max_iterations):
             completion = llm.chat_completion(
                 messages,
                 model=self._active_model(),
@@ -493,8 +501,137 @@ Slash commands:
   /remember TEXT
   /compact [--force]
   /context [--refresh]
+  /goal [--run] [--resume ID] [--status] [--stop ID] OBJECTIVE
   /exit
 """.strip())
+
+    def _goal_messages(self, goal, cycle):
+        events = goal.get("events", [])[-20:]
+        event_text = "\n".join(
+            f"- {event.get('ts')} [{event.get('kind')}] {event.get('content')} {event.get('metadata', {})}"
+            for event in events
+        )
+        objective = goal["objective"]
+        content = f"""
+Goal ID: {goal['id']}
+Goal objective: {objective}
+Goal status: {goal.get('status')}
+Cycle: {cycle}
+Estimated completion: {goal.get('estimated_completion_at') or 'not set'}
+
+Recent goal events:
+{event_text or '- none'}
+
+Continue this goal. Use web_search for outside knowledge and discovery leads, use archive search tools to add works, then use download/process/archive_raw or run_backlog_until_done to push found files through the archival workflow. Set or update the goal timer when you can estimate remaining work. Keep going unless the goal is complete or blocked.
+""".strip()
+        return self._chat_messages(content)
+
+    def _print_goal(self, goal):
+        print("\n==================== GOAL =======================")
+        print(f"id: {goal['id']}")
+        print(f"status: {goal.get('status')}")
+        print(f"objective: {goal.get('objective')}")
+        print(f"cycles: {goal.get('cycles', 0)}")
+        print(f"estimated_completion_at: {goal.get('estimated_completion_at')}")
+        print(f"updated_at: {goal.get('updated_at')}")
+        events = goal.get("events", [])[-5:]
+        if events:
+            print("recent events:")
+            for event in events:
+                print(f"  - {event.get('ts')} [{event.get('kind')}] {event.get('content')}")
+        print("=================================================")
+
+    def _run_goal(self, goal, max_cycles=1, sleep_seconds=0):
+        self.current_goal = self.goal_store.update(goal["id"], status="running")
+        try:
+            for _ in range(max_cycles):
+                goal = self.goal_store.get(self.current_goal["id"])
+                if goal.get("status") in ("complete", "blocked", "stopped"):
+                    break
+                cycle = int(goal.get("cycles", 0)) + 1
+                self.goal_store.append_event(goal["id"], "cycle", f"starting goal cycle {cycle}")
+                print(f"[goal] cycle {cycle} for {goal['id']}")
+                response = self._run_llm_tool_loop(
+                    self._goal_messages(goal, cycle),
+                    max_iterations=MAX_GOAL_TOOL_ITERATIONS,
+                )
+                if response:
+                    print(response)
+                    self.goal_store.append_event(goal["id"], "assistant", response)
+                goal = self.goal_store.update(goal["id"], cycles=cycle)
+                self.current_goal = goal
+                if goal.get("status") in ("complete", "blocked", "stopped"):
+                    break
+                if sleep_seconds:
+                    print(f"[goal] sleeping {sleep_seconds}s before next cycle")
+                    time.sleep(sleep_seconds)
+        except KeyboardInterrupt:
+            goal = self.goal_store.update(self.current_goal["id"], status="active")
+            self.goal_store.append_event(goal["id"], "interrupted", "goal run interrupted by operator")
+            self.current_goal = goal
+            print("\n[goal] interrupted; goal remains active and can be resumed")
+        goal = self.goal_store.get(self.current_goal["id"])
+        if goal.get("status") == "running":
+            goal = self.goal_store.update(goal["id"], status="active")
+        self.current_goal = goal
+        self._print_goal(goal)
+
+    def do_goal(self, line):
+        """Create, inspect, or run a durable goal."""
+        parser = _parser("goal")
+        parser.add_argument("--run", action="store_true", help="Run goal cycles after creating or resuming.")
+        parser.add_argument("--resume", help="Resume an existing goal id.")
+        parser.add_argument("--status", action="store_true", help="Show active and recent goals.")
+        parser.add_argument("--stop", help="Stop a goal id.")
+        parser.add_argument("--forever", action="store_true", help="Run cycles until complete, blocked, stopped, or interrupted.")
+        parser.add_argument("--max-cycles", type=int, default=1)
+        parser.add_argument("--sleep-seconds", type=int, default=0)
+        parser.add_argument("objective", nargs="*")
+        args = self._run_parser(parser, line)
+        if not args:
+            return
+
+        if args.status:
+            active = self.goal_store.active()
+            if active:
+                self._print_goal(active)
+            else:
+                print("[goal] no active goal")
+            for goal in self.goal_store.list()[-5:]:
+                if not active or goal["id"] != active["id"]:
+                    self._print_goal(goal)
+            return
+
+        if args.stop:
+            goal = self.goal_store.update(args.stop, status="stopped")
+            self.goal_store.append_event(goal["id"], "stopped", "stopped by operator")
+            self._print_goal(goal)
+            return
+
+        if args.resume:
+            goal = self.goal_store.get(args.resume)
+            if not goal:
+                print(f"[!] Unknown goal: {args.resume}")
+                return
+            if goal.get("status") in ("complete", "blocked", "stopped"):
+                goal = self.goal_store.update(goal["id"], status="active")
+        else:
+            objective = " ".join(args.objective).strip()
+            if not objective:
+                active = self.goal_store.active()
+                if active:
+                    self._print_goal(active)
+                else:
+                    print("[!] Usage: /goal [--run] OBJECTIVE")
+                return
+            goal = self.goal_store.create(objective, metadata={"model": self._active_model()})
+            self.goal_store.append_event(goal["id"], "created", objective)
+
+        self.current_goal = goal
+        self._print_goal(goal)
+        if args.run:
+            max_cycles = 10**9 if args.forever else max(args.max_cycles, 1)
+            self._run_goal(goal, max_cycles=max_cycles, sleep_seconds=max(args.sleep_seconds, 0))
 
     def do_memory(self, line):
         """Show saved context logs: /memory [--limit N] [--search TEXT] [--clear]."""
@@ -742,6 +879,8 @@ Commands:
       Show model context window, memory estimate, and compaction threshold.
   /compact [--force]
       Compact saved context logs using OpenRouter when available.
+  /goal [--run] [--forever] [--max-cycles N] [--sleep-seconds N] OBJECTIVE
+      Create or resume a durable long-running archival goal.
   /exit
       Leave the harness.
 
