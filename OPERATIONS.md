@@ -282,6 +282,12 @@ Or use the repo-local launcher:
 /root/archive-archiver/bin/alge
 ```
 
+When run interactively with no arguments, `alge` starts or reconnects to a
+persistent tmux session named `alge`. Argument-bearing invocations such as
+`alge -c "/status"` run directly for scripts. Use `alge --no-tmux` or
+`ALGE_NO_TMUX=1 alge` to bypass tmux, and `ALGE_TMUX_SESSION=name` to use a
+separate session.
+
 Install a global `alge` command on this server:
 
 ```sh

@@ -151,6 +151,13 @@ For a global `alge` command on this server:
 ln -sf /root/archive-archiver/bin/alge /usr/local/bin/alge
 ```
 
+Running `alge` with no arguments opens the harness inside a persistent tmux
+session named `alge`. If that session already exists, the launcher reconnects
+to it, so closing a terminal does not kill the harness. Command-mode usage such
+as `alge -c "/status"` runs directly and does not attach to tmux. Use
+`alge --no-tmux` or `ALGE_NO_TMUX=1 alge` to force direct interactive mode.
+Set `ALGE_TMUX_SESSION=name` to use a different session name.
+
 The harness gives you an `alge>` prompt for directing the pipeline without
 remembering every full command. Anything typed without a leading slash is sent
 to the active OpenRouter model as part of the ongoing conversation. The model
