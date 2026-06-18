@@ -6,6 +6,8 @@ import random
 import re
 import time
 import urllib.parse
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -45,6 +47,12 @@ def _object_key(file_row, sha256, extension):
     work_id = _safe_segment(file_row.get("work_id"), "work")
     file_id = _safe_segment(file_row.get("id"), "file")
     return f"{site}/{work_id}/{file_id}/{sha256[:16]}{extension}"
+
+
+def download_domain(file_row):
+    url = file_row.get("download_url") or file_row.get("url") or ""
+    parsed = urllib.parse.urlparse(url)
+    return parsed.netloc.lower() or _safe_segment(file_row.get("site"))
 
 
 class HostRateLimiter:
@@ -125,7 +133,7 @@ def download_file(file_row, bucket_dir=DEFAULT_RAW_BUCKET_DIR, limiter=None, max
                 "bucket_uri": final_path.resolve().as_uri(),
                 "storage_key": storage_key,
                 "sha256": sha256,
-                "bytes": byte_count,
+                "byte_count": byte_count,
                 "content_type": content_type,
                 "http_status": status_code,
                 "final_url": response.url,
@@ -149,11 +157,81 @@ def download_pending(limit=10, bucket_dir=DEFAULT_RAW_BUCKET_DIR, requests_per_s
             metadata = download_file(row, bucket_dir=bucket_dir, limiter=limiter, max_bytes=max_bytes)
             db.mark_download_succeeded(file_id=file_id, **metadata)
             results["downloaded"] += 1
-            print(f"    [+] Stored {metadata['bytes']} bytes at {metadata['storage_key']}")
+            print(f"    [+] Stored {metadata['byte_count']} bytes at {metadata['storage_key']}")
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             db.mark_download_failed(file_id, exc, http_status=status)
             results["failed"] += 1
             print(f"    [!] Download failed: {exc}")
+
+    return results
+
+
+def _download_domain_rows(domain, rows, bucket_dir, requests_per_second, max_bytes):
+    limiter = HostRateLimiter(requests_per_second=requests_per_second)
+    results = {"downloaded": 0, "failed": 0, "skipped": 0}
+
+    for row in rows:
+        file_id = row["id"]
+        print(f"[*] [{domain}] Downloading file {file_id}: {row.get('title')} [{row.get('format')}]")
+        db.mark_download_started(file_id)
+        try:
+            metadata = download_file(row, bucket_dir=bucket_dir, limiter=limiter, max_bytes=max_bytes)
+            db.mark_download_succeeded(file_id=file_id, **metadata)
+            results["downloaded"] += 1
+            print(f"    [+] [{domain}] Stored {metadata['byte_count']} bytes at {metadata['storage_key']}")
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            db.mark_download_failed(file_id, exc, http_status=status)
+            results["failed"] += 1
+            print(f"    [!] [{domain}] Download failed: {exc}")
+
+    return results
+
+
+def download_pending_by_domain(
+    limit=50,
+    bucket_dir=DEFAULT_RAW_BUCKET_DIR,
+    requests_per_second=0.2,
+    max_bytes=None,
+    max_domains=None,
+    per_domain_limit=None,
+):
+    if per_domain_limit is not None and per_domain_limit <= 0:
+        return {"downloaded": 0, "failed": 0, "skipped": 0}
+
+    rows = db.get_pending_download_files(limit=limit)
+    grouped = defaultdict(list)
+    for row in rows:
+        domain = download_domain(row)
+        if per_domain_limit is not None and len(grouped[domain]) >= per_domain_limit:
+            continue
+        grouped[domain].append(row)
+
+    domains = sorted(grouped)
+    if max_domains is not None:
+        domains = domains[:max_domains]
+
+    results = {"downloaded": 0, "failed": 0, "skipped": 0}
+    if not domains:
+        return results
+
+    print(f"[*] Starting {len(domains)} domain download workers.")
+    with ThreadPoolExecutor(max_workers=len(domains)) as executor:
+        futures = {
+            executor.submit(
+                _download_domain_rows,
+                domain,
+                grouped[domain],
+                bucket_dir,
+                requests_per_second,
+                max_bytes,
+            ): domain
+            for domain in domains
+        }
+        for future in as_completed(futures):
+            domain_results = future.result()
+            for key, count in domain_results.items():
+                results[key] += count
 
     return results

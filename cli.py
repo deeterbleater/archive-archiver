@@ -1,6 +1,7 @@
 import argparse
 import sys
 import os
+import time
 import urllib.parse
 from dotenv import load_dotenv
 
@@ -20,134 +21,154 @@ import downloader
 import processor
 import corpus
 
+PUBLIC_COLLECTOR_QUERIES = [
+    "public domain philosophy",
+    "public domain history",
+    "public domain political economy",
+    "public domain literature",
+    "classical anarchism",
+    "19th century philosophy",
+    "enlightenment philosophy",
+    "labor history public domain",
+    "ancient history public domain",
+    "ethics public domain",
+]
+
+DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library")
+ALL_SOURCES = ("archive_org", "anarchist_library", "annas_archive")
+
 def print_banner():
     print("=========================================")
     print("      Archive Crawler & LLM Analyzer     ")
     print("=========================================")
 
-def perform_crawl(query, model, max_results=3):
+def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
+    sources = set(sources)
     print(f"[*] Searching archives for: '{query}'...")
     
     # 1. ARCHIVE.ORG SEARCH
-    print("[*] Querying Archive.org Search API...")
-    archive_docs = scrapers.search_archive_org(query)
-    # Filter Archive.org files to only top max_results docs
-    print(f"[+] Found {len(archive_docs)} matching documents on Archive.org. Processing top {max_results}...")
-    for doc in archive_docs[:max_results]:
-        identifier = doc.get("identifier")
-        if not identifier:
-            continue
-        print(f"    - Processing Archive.org ID: {identifier}...")
-        files = scrapers.get_archive_org_files(identifier)
-        if files:
-            work_id = db.add_work(
-                title=doc.get("title", identifier),
-                author=doc.get("creator", "Unknown"),
-                search_query=query
-            )
-            for f in files:
-                db.add_file(
-                    work_id=work_id,
-                    site=f["site"],
-                    format=f["format"],
-                    url=f["url"],
-                    file_size=f["file_size"],
-                    download_source=f["download_source"],
-                    download_url=f["download_url"]
+    if "archive_org" in sources:
+        print("[*] Querying Archive.org Search API...")
+        archive_docs = scrapers.search_archive_org(query)
+        # Filter Archive.org files to only top max_results docs
+        print(f"[+] Found {len(archive_docs)} matching documents on Archive.org. Processing top {max_results}...")
+        for doc in archive_docs[:max_results]:
+            identifier = doc.get("identifier")
+            if not identifier:
+                continue
+            print(f"    - Processing Archive.org ID: {identifier}...")
+            files = scrapers.get_archive_org_files(identifier)
+            if files:
+                work_id = db.add_work(
+                    title=doc.get("title", identifier),
+                    author=doc.get("creator", "Unknown"),
+                    search_query=query
                 )
-            print(f"      [+] Logged {len(files)} versions/files for this work.")
+                for f in files:
+                    db.add_file(
+                        work_id=work_id,
+                        site=f["site"],
+                        format=f["format"],
+                        url=f["url"],
+                        file_size=f["file_size"],
+                        download_source=f["download_source"],
+                        download_url=f["download_url"]
+                    )
+                print(f"      [+] Logged {len(files)} versions/files for this work.")
             
     # 2. THE ANARCHIST LIBRARY SEARCH
-    print("\n[*] Querying The Anarchist Library...")
-    al_results = scrapers.search_anarchist_library(query)
-    print(f"[+] Found {len(al_results)} search results on The Anarchist Library. Analyzing top {max_results}...")
-    for res in al_results[:max_results]:
-        url = res["url"]
-        print(f"    - Scraping and analyzing: {url}...")
-        html = scrapers.fetch_url(url)
-        if not html:
-            print("      [!] Failed to fetch content.")
-            continue
-            
-        cleaned = scrapers.clean_html(html)
-        print("      [*] Analyzing page with OpenRouter LLM...")
-        try:
-            parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-        except ValueError as ve:
-            print(f"      [!] LLM skipped: {ve}")
-            parsed_data = None
-        
-        if parsed_data and parsed_data.get("title"):
-            title = parsed_data["title"]
-            author = parsed_data.get("author")
-            work_id = db.add_work(title=title, author=author, search_query=query)
-            
-            files = parsed_data.get("files", [])
-            for f in files:
-                # Resolve relative url if any
-                f_url = urllib.parse.urljoin(url, f.get("url", ""))
-                f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
+    if "anarchist_library" in sources:
+        print("\n[*] Querying The Anarchist Library...")
+        al_results = scrapers.search_anarchist_library(query)
+        print(f"[+] Found {len(al_results)} search results on The Anarchist Library. Analyzing top {max_results}...")
+        for res in al_results[:max_results]:
+            url = res["url"]
+            print(f"    - Scraping and analyzing: {url}...")
+            html = scrapers.fetch_url(url)
+            if not html:
+                print("      [!] Failed to fetch content.")
+                continue
                 
-                db.add_file(
-                    work_id=work_id,
-                    site="theanarchistlibrary.org",
-                    format=f.get("format", "Unknown"),
-                    url=f_url,
-                    file_size=f.get("file_size"),
-                    download_source=f.get("download_source", "Anarchist Library"),
-                    download_url=f_dl_url
-                )
-            print(f"      [+] Logged work: '{title}' with {len(files)} download versions.")
-        else:
-            print("      [!] LLM failed to parse or extract structure.")
+            cleaned = scrapers.clean_html(html)
+            print("      [*] Analyzing page with OpenRouter LLM...")
+            try:
+                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+            except ValueError as ve:
+                print(f"      [!] LLM skipped: {ve}")
+                parsed_data = None
+            
+            if parsed_data and parsed_data.get("title"):
+                title = parsed_data["title"]
+                author = parsed_data.get("author")
+                work_id = db.add_work(title=title, author=author, search_query=query)
+                
+                files = parsed_data.get("files", [])
+                for f in files:
+                    # Resolve relative url if any
+                    f_url = urllib.parse.urljoin(url, f.get("url", ""))
+                    f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
+                    
+                    db.add_file(
+                        work_id=work_id,
+                        site="theanarchistlibrary.org",
+                        format=f.get("format", "Unknown"),
+                        url=f_url,
+                        file_size=f.get("file_size"),
+                        download_source=f.get("download_source", "Anarchist Library"),
+                        download_url=f_dl_url
+                    )
+                print(f"      [+] Logged work: '{title}' with {len(files)} download versions.")
+            else:
+                print("      [!] LLM failed to parse or extract structure.")
             
     # 3. ANNA'S ARCHIVE SEARCH
-    print("\n[*] Querying Anna's Archive...")
-    annas_results = scrapers.search_annas_archive(query)
-    print(f"[+] Found {len(annas_results)} search results on Anna's Archive. Analyzing top {max_results}...")
-    for res in annas_results[:max_results]:
-        url = res["url"]
-        print(f"    - Scraping and analyzing: {url}...")
-        html = scrapers.fetch_url(url)
-        if not html:
-            print("      [!] Failed to fetch content.")
-            continue
-            
-        cleaned = scrapers.clean_html(html)
-        print("      [*] Analyzing page with OpenRouter LLM...")
-        try:
-            parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-        except ValueError as ve:
-            print(f"      [!] LLM skipped: {ve}")
-            parsed_data = None
-        
-        if parsed_data and parsed_data.get("title"):
-            title = parsed_data["title"]
-            author = parsed_data.get("author")
-            work_id = db.add_work(title=title, author=author, search_query=query)
-            
-            files = parsed_data.get("files", [])
-            for f in files:
-                f_url = urllib.parse.urljoin(url, f.get("url", ""))
-                f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
+    if "annas_archive" in sources:
+        print("\n[*] Querying Anna's Archive...")
+        annas_results = scrapers.search_annas_archive(query)
+        print(f"[+] Found {len(annas_results)} search results on Anna's Archive. Analyzing top {max_results}...")
+        for res in annas_results[:max_results]:
+            url = res["url"]
+            print(f"    - Scraping and analyzing: {url}...")
+            html = scrapers.fetch_url(url)
+            if not html:
+                print("      [!] Failed to fetch content.")
+                continue
                 
-                db.add_file(
-                    work_id=work_id,
-                    site="annas-archive.org",
-                    format=f.get("format", "Unknown"),
-                    url=f_url,
-                    file_size=f.get("file_size"),
-                    download_source=f.get("download_source", "Anna's Archive Mirror"),
-                    download_url=f_dl_url
-                )
-            print(f"      [+] Logged work: '{title}' with {len(files)} download versions.")
-        else:
-            print("      [!] LLM failed to parse or extract structure.")
+            cleaned = scrapers.clean_html(html)
+            print("      [*] Analyzing page with OpenRouter LLM...")
+            try:
+                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+            except ValueError as ve:
+                print(f"      [!] LLM skipped: {ve}")
+                parsed_data = None
+            
+            if parsed_data and parsed_data.get("title"):
+                title = parsed_data["title"]
+                author = parsed_data.get("author")
+                work_id = db.add_work(title=title, author=author, search_query=query)
+                
+                files = parsed_data.get("files", [])
+                for f in files:
+                    f_url = urllib.parse.urljoin(url, f.get("url", ""))
+                    f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
+                    
+                    db.add_file(
+                        work_id=work_id,
+                        site="annas-archive.org",
+                        format=f.get("format", "Unknown"),
+                        url=f_url,
+                        file_size=f.get("file_size"),
+                        download_source=f.get("download_source", "Anna's Archive Mirror"),
+                        download_url=f_dl_url
+                    )
+                print(f"      [+] Logged work: '{title}' with {len(files)} download versions.")
+            else:
+                print("      [!] LLM failed to parse or extract structure.")
 
     print(f"\n[+] Crawl complete for: '{query}'")
 
 def handle_search(args):
-    perform_crawl(args.query, args.model, args.max_results)
+    perform_crawl(args.query, args.model, args.max_results, sources=args.sources)
 
 def handle_research(args):
     import re
@@ -168,7 +189,7 @@ def handle_research(args):
         print(f"\n=========================================")
         print(f"  Researching query {idx+1}/{len(queries)}: '{query}'")
         print("=========================================")
-        perform_crawl(query, args.model, args.max_results)
+        perform_crawl(query, args.model, args.max_results, sources=args.sources)
         
     # 3. Compile database entries
     print("\n[*] Compiling crawled works from database...")
@@ -276,16 +297,80 @@ def handle_status(args):
 
 def handle_download(args):
     max_bytes = args.max_mb * 1024 * 1024 if args.max_mb else None
-    results = downloader.download_pending(
-        limit=args.limit,
-        bucket_dir=args.bucket_dir,
-        requests_per_second=args.rps,
-        max_bytes=max_bytes,
-    )
+    if args.domain_workers:
+        results = downloader.download_pending_by_domain(
+            limit=args.limit,
+            bucket_dir=args.bucket_dir,
+            requests_per_second=args.rps,
+            max_bytes=max_bytes,
+            max_domains=args.max_domains,
+            per_domain_limit=args.per_domain_limit,
+        )
+    else:
+        results = downloader.download_pending(
+            limit=args.limit,
+            bucket_dir=args.bucket_dir,
+            requests_per_second=args.rps,
+            max_bytes=max_bytes,
+        )
     print("\n================ DOWNLOAD SUMMARY ===============")
     for status, count in results.items():
         print(f"{status}: {count}")
     print("=================================================")
+
+
+def _load_queries(args):
+    if args.queries_file:
+        with open(args.queries_file, "r", encoding="utf-8") as f:
+            queries = [line.strip() for line in f if line.strip() and not line.lstrip().startswith("#")]
+    else:
+        queries = list(PUBLIC_COLLECTOR_QUERIES)
+    if args.query:
+        queries.extend(args.query)
+    return queries
+
+
+def handle_collect(args):
+    queries = _load_queries(args)
+    if not queries:
+        print("[!] No collection queries provided.")
+        sys.exit(1)
+
+    cycle = 0
+    while True:
+        cycle += 1
+        print("\n================ COLLECTION CYCLE ===============")
+        print(f"Cycle: {cycle}")
+        print(f"Queries: {len(queries)}")
+        print(f"Sources: {', '.join(args.sources)}")
+        print("=================================================")
+
+        for query in queries:
+            perform_crawl(query, args.model, args.max_results, sources=args.sources)
+
+        max_bytes = args.max_mb * 1024 * 1024 if args.max_mb else None
+        download_results = downloader.download_pending_by_domain(
+            limit=args.download_limit,
+            bucket_dir=args.raw_bucket_dir,
+            requests_per_second=args.rps,
+            max_bytes=max_bytes,
+            max_domains=args.max_domains,
+            per_domain_limit=args.per_domain_limit,
+        )
+        process_results = processor.process_pending(
+            limit=args.process_limit,
+            bucket_dir=args.text_bucket_dir,
+            extractor=args.extractor,
+        )
+
+        print("\n================ CYCLE SUMMARY ==================")
+        print(f"downloads: {download_results}")
+        print(f"processing: {process_results}")
+        print("=================================================")
+
+        if args.once:
+            break
+        time.sleep(args.sleep_seconds)
 
 def handle_process(args):
     results = processor.process_pending(
@@ -337,6 +422,13 @@ def main():
     # Search Command
     parser_search = subparsers.add_parser("search", help="Search and crawl archive sites for a term.")
     parser_search.add_argument("query", type=str, help="The search query (title, author, keywords).")
+    parser_search.add_argument(
+        "--sources",
+        nargs="+",
+        choices=ALL_SOURCES,
+        default=ALL_SOURCES,
+        help="Archive sources to query.",
+    )
     
     # Direct URL Command
     parser_url = subparsers.add_parser("url", help="Crawl and analyze a specific book detail page.")
@@ -345,6 +437,13 @@ def main():
     # Research Command
     parser_research = subparsers.add_parser("research", help="Run agentic topic research (generates terms, crawls, reports).")
     parser_research.add_argument("topic", type=str, help="The broad topic to research.")
+    parser_research.add_argument(
+        "--sources",
+        nargs="+",
+        choices=ALL_SOURCES,
+        default=ALL_SOURCES,
+        help="Archive sources to query.",
+    )
     
     # Status Command
     subparsers.add_parser("status", help="Show database crawler statistics.")
@@ -355,12 +454,38 @@ def main():
     parser_download.add_argument("--bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR, help="Filesystem-backed raw bucket directory.")
     parser_download.add_argument("--rps", type=float, default=0.2, help="Per-host requests per second. Default is 0.2, or one request every five seconds.")
     parser_download.add_argument("--max-mb", type=int, default=250, help="Maximum size per file in MB. Use 0 for no limit.")
+    parser_download.add_argument("--domain-workers", action="store_true", help="Run one sequential worker per download domain.")
+    parser_download.add_argument("--max-domains", type=int, help="Maximum domain workers to run in this command.")
+    parser_download.add_argument("--per-domain-limit", type=int, help="Maximum files assigned to each domain worker.")
 
     # Process Command
     parser_process = subparsers.add_parser("process", help="Extract plaintext from downloaded raw objects.")
     parser_process.add_argument("--limit", type=int, default=10, help="Maximum downloads to process in this run.")
     parser_process.add_argument("--bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
     parser_process.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
+
+    # Autonomous Collection Command
+    parser_collect = subparsers.add_parser("collect", help="Autonomously discover, download, and process public works.")
+    parser_collect.add_argument("--query", action="append", help="Additional query to include. Can be repeated.")
+    parser_collect.add_argument("--queries-file", help="Newline-delimited queries file. Blank lines and # comments are ignored.")
+    parser_collect.add_argument(
+        "--sources",
+        nargs="+",
+        choices=ALL_SOURCES,
+        default=DEFAULT_PUBLIC_SOURCES,
+        help="Sources to query. Defaults to public-source collection only.",
+    )
+    parser_collect.add_argument("--once", action="store_true", help="Run one collection cycle and exit.")
+    parser_collect.add_argument("--sleep-seconds", type=int, default=3600, help="Delay between collection cycles.")
+    parser_collect.add_argument("--download-limit", type=int, default=100, help="Maximum files to download per cycle.")
+    parser_collect.add_argument("--process-limit", type=int, default=100, help="Maximum downloads to process per cycle.")
+    parser_collect.add_argument("--raw-bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR, help="Filesystem-backed raw bucket directory.")
+    parser_collect.add_argument("--text-bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
+    parser_collect.add_argument("--rps", type=float, default=0.2, help="Per-domain download requests per second.")
+    parser_collect.add_argument("--max-mb", type=int, default=250, help="Maximum size per file in MB. Use 0 for no limit.")
+    parser_collect.add_argument("--max-domains", type=int, help="Maximum domain workers per download phase.")
+    parser_collect.add_argument("--per-domain-limit", type=int, help="Maximum files assigned to each domain worker per cycle.")
+    parser_collect.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
 
     # Corpus Command
     parser_corpus = subparsers.add_parser("corpus", help="Build an immutable corpus manifest from processed plaintext.")
@@ -389,6 +514,8 @@ def main():
         handle_download(args)
     elif args.command == "process":
         handle_process(args)
+    elif args.command == "collect":
+        handle_collect(args)
     elif args.command == "corpus":
         handle_corpus(args)
 

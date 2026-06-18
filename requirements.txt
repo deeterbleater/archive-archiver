@@ -4,3 +4,5 @@ openai>=1.0.0
 python-dotenv>=1.0.0
 pypdf>=5.0.0
 EbookLib>=0.18
+fastapi>=0.116.0
+uvicorn[standard]>=0.35.0

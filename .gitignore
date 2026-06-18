@@ -6,6 +6,7 @@ __pycache__/
 # Local Database
 archive_works.db
 bucket/
+logs/
 
 # API keys and secrets
 .env

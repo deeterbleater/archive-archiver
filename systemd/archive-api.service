@@ -1,0 +1,18 @@
+[Unit]
+Description=Archive Archiver read-only visualization API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/archive-archiver
+Environment=PYTHONUNBUFFERED=1
+Environment=ARCHIVE_API_CORS_ORIGINS=*
+ExecStart=/root/archive-archiver/venv/bin/uvicorn api:app --host 0.0.0.0 --port 8090
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/archive-archiver/logs/api.log
+StandardError=append:/root/archive-archiver/logs/api.log
+
+[Install]
+WantedBy=multi-user.target

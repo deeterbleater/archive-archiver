@@ -5,6 +5,7 @@ import unittest
 
 import corpus
 import db
+import downloader
 
 
 class PipelineStateTests(unittest.TestCase):
@@ -104,6 +105,61 @@ class PipelineStateTests(unittest.TestCase):
         corpus_text = Path(first["corpus_path"]).read_text(encoding="utf-8")
         self.assertIn("The corpus owns the order.", corpus_text)
         self.assertIn("The self owns the corpus.", corpus_text)
+
+    def test_download_domain_prefers_download_url_host(self):
+        row = {
+            "site": "source.example",
+            "url": "https://source.example/detail",
+            "download_url": "https://cdn.example/files/book.txt",
+        }
+
+        self.assertEqual(downloader.download_domain(row), "cdn.example")
+
+    def test_domain_workers_process_one_queue_per_domain(self):
+        work_id = db.add_work(title="Domain Fixture", author="Test Author", search_query="domains")
+        db.add_file(
+            work_id=work_id,
+            site="alpha.example",
+            format="Text",
+            url="https://alpha.example/detail",
+            download_source="fixture",
+            download_url="https://alpha.example/a.txt",
+        )
+        db.add_file(
+            work_id=work_id,
+            site="beta.example",
+            format="Text",
+            url="https://beta.example/detail",
+            download_source="fixture",
+            download_url="https://beta.example/b.txt",
+        )
+
+        seen_domains = []
+        original_download_file = downloader.download_file
+
+        def fake_download_file(row, bucket_dir, limiter, max_bytes):
+            seen_domains.append(downloader.download_domain(row))
+            return {
+                "bucket_uri": "file:///tmp/fake.txt",
+                "storage_key": f"{row['id']}.txt",
+                "sha256": f"sha-{row['id']}",
+                "byte_count": 12,
+                "content_type": "text/plain",
+                "http_status": 200,
+                "final_url": row["download_url"],
+                "etag": None,
+                "last_modified": None,
+            }
+
+        try:
+            downloader.download_file = fake_download_file
+            results = downloader.download_pending_by_domain(limit=10, requests_per_second=1000)
+        finally:
+            downloader.download_file = original_download_file
+
+        self.assertEqual(results, {"downloaded": 2, "failed": 0, "skipped": 0})
+        self.assertEqual(sorted(seen_domains), ["alpha.example", "beta.example"])
+        self.assertEqual(db.get_stats()["downloads_by_status"], {"downloaded": 2})
 
 
 if __name__ == "__main__":
