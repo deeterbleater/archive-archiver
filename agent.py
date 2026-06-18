@@ -1,8 +1,10 @@
 import argparse
 import cmd
 import json
+import os
 import select
 import shlex
+import subprocess
 import sys
 import termios
 import threading
@@ -303,6 +305,13 @@ class ArchiveAgentShell(cmd.Cmd):
     def do_exit(self, _line):
         """Leave the agent harness."""
         terminal_theme.print_markup("[muted]bye[/muted]")
+        if os.getenv("ALGE_TMUX_MANAGED") == "1" and os.getenv("TMUX"):
+            session = os.getenv("ALGE_TMUX_SESSION", "alge")
+            subprocess.Popen(
+                ["tmux", "kill-session", "-t", session],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         return True
 
     def do_quit(self, line):

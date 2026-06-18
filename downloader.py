@@ -14,6 +14,7 @@ import requests
 import db
 import scanner
 import scrapers
+import terminal_theme
 
 
 DEFAULT_RAW_BUCKET_DIR = os.getenv("ARCHIVE_RAW_BUCKET_DIR", "bucket/raw")
@@ -212,13 +213,15 @@ def download_pending(limit=10, bucket_dir=DEFAULT_RAW_BUCKET_DIR, requests_per_s
 
     for row in rows:
         file_id = row["id"]
-        print(f"[*] Downloading file {file_id}: {row.get('title')} [{row.get('format')}]")
+        terminal_theme.print_pip("pending", f"download file {file_id}: {row.get('title')} [{row.get('format')}]")
         db.mark_download_started(file_id)
         try:
             metadata = download_file(row, bucket_dir=bucket_dir, limiter=limiter, max_bytes=max_bytes, quarantine_dir=quarantine_dir)
             db.mark_download_succeeded(file_id=file_id, **metadata)
             results["downloaded"] += 1
-            print(f"    [+] Stored {metadata['byte_count']} bytes at {metadata['storage_key']}")
+            status = "success" if metadata.get("http_status") == 200 else "failed"
+            terminal_theme.print_pip(status, f"HTTP {metadata.get('http_status')} stored {metadata['byte_count']} bytes at {metadata['storage_key']}")
+            terminal_theme.print_pip("success" if metadata.get("scan_status") in ("clean", "unavailable") else "failed", f"scan {metadata.get('scan_status')} via {metadata.get('scan_engine')}")
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             db.mark_download_failed(
@@ -231,7 +234,7 @@ def download_pending(limit=10, bucket_dir=DEFAULT_RAW_BUCKET_DIR, requests_per_s
                 quarantine_uri=getattr(exc, "quarantine_uri", None),
             )
             results["failed"] += 1
-            print(f"    [!] Download failed: {exc}")
+            terminal_theme.print_pip("failed", f"download failed: {exc}")
 
     return results
 
@@ -242,13 +245,15 @@ def _download_domain_rows(domain, rows, bucket_dir, requests_per_second, max_byt
 
     for row in rows:
         file_id = row["id"]
-        print(f"[*] [{domain}] Downloading file {file_id}: {row.get('title')} [{row.get('format')}]")
+        terminal_theme.print_pip("pending", f"[{domain}] download file {file_id}: {row.get('title')} [{row.get('format')}]")
         db.mark_download_started(file_id)
         try:
             metadata = download_file(row, bucket_dir=bucket_dir, limiter=limiter, max_bytes=max_bytes, quarantine_dir=quarantine_dir)
             db.mark_download_succeeded(file_id=file_id, **metadata)
             results["downloaded"] += 1
-            print(f"    [+] [{domain}] Stored {metadata['byte_count']} bytes at {metadata['storage_key']}")
+            status = "success" if metadata.get("http_status") == 200 else "failed"
+            terminal_theme.print_pip(status, f"[{domain}] HTTP {metadata.get('http_status')} stored {metadata['byte_count']} bytes at {metadata['storage_key']}")
+            terminal_theme.print_pip("success" if metadata.get("scan_status") in ("clean", "unavailable") else "failed", f"[{domain}] scan {metadata.get('scan_status')} via {metadata.get('scan_engine')}")
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             db.mark_download_failed(
@@ -261,7 +266,7 @@ def _download_domain_rows(domain, rows, bucket_dir, requests_per_second, max_byt
                 quarantine_uri=getattr(exc, "quarantine_uri", None),
             )
             results["failed"] += 1
-            print(f"    [!] [{domain}] Download failed: {exc}")
+            terminal_theme.print_pip("failed", f"[{domain}] download failed: {exc}")
 
     return results
 

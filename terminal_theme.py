@@ -11,7 +11,9 @@ from rich.theme import Theme
 
 
 POND_SCUM = "#6f8f1f"
-LOGO_GRADIENT = ("#c8ff7a", "#9ccd3e", "#6f8f1f", "#486b16", "#263f0a")
+LOGO_GRADIENT = ("#c8ff7a", "#9ccd3e", "#6f8f1f", "#486b16", "#c9d1c8")
+READLINE_START_IGNORE = "\001"
+READLINE_END_IGNORE = "\002"
 
 THEME = Theme({
     "highlight": POND_SCUM,
@@ -52,6 +54,21 @@ def print_logo(lines):
         console.print(Text(str(line).rstrip(), style=color))
 
 
+def pip(status="pending"):
+    style = {
+        "pending": "warning",
+        "success": "success",
+        "failed": "danger",
+        "skipped": "muted",
+        "info": "tool",
+    }.get(status, "warning")
+    return f"[{style}]•[/{style}]"
+
+
+def print_pip(status, message):
+    print_markup(f"{pip(status)} {message}")
+
+
 def make_table(*columns, title=None):
     table = Table(title=title, border_style="pond", header_style="label", show_lines=False)
     for column in columns:
@@ -77,4 +94,13 @@ def render_markup(text):
 
 
 def prompt():
-    return f"\033[38;2;111;143;31malge>\033[0m "
+    return (
+        f"{READLINE_START_IGNORE}\033[38;2;111;143;31m{READLINE_END_IGNORE}"
+        "alge>"
+        f"{READLINE_START_IGNORE}\033[0m{READLINE_END_IGNORE} "
+    )
+
+
+def visible_prompt(prompt_text=None):
+    text = prompt_text if prompt_text is not None else prompt()
+    return text.replace(READLINE_START_IGNORE, "").replace(READLINE_END_IGNORE, "")

@@ -15,10 +15,22 @@ class TerminalThemeTests(unittest.TestCase):
 
         self.assertIn("alge", rendered)
 
-    def test_logo_gradient_runs_from_light_to_dark_green(self):
+    def test_logo_gradient_finishes_with_light_gray_line(self):
         self.assertEqual(terminal_theme.LOGO_GRADIENT[0], "#c8ff7a")
-        self.assertEqual(terminal_theme.LOGO_GRADIENT[-1], "#263f0a")
+        self.assertEqual(terminal_theme.LOGO_GRADIENT[-1], "#c9d1c8")
         self.assertEqual(len(terminal_theme.LOGO_GRADIENT), 5)
+
+    def test_prompt_marks_ansi_as_nonprinting_for_readline(self):
+        prompt = terminal_theme.prompt()
+
+        self.assertIn(terminal_theme.READLINE_START_IGNORE, prompt)
+        self.assertIn(terminal_theme.READLINE_END_IGNORE, prompt)
+        self.assertEqual(terminal_theme.visible_prompt(prompt), "\033[38;2;111;143;31malge>\033[0m ")
+
+    def test_status_pips_use_expected_styles(self):
+        self.assertEqual(terminal_theme.pip("pending"), "[warning]•[/warning]")
+        self.assertEqual(terminal_theme.pip("success"), "[success]•[/success]")
+        self.assertEqual(terminal_theme.pip("failed"), "[danger]•[/danger]")
 
 
 if __name__ == "__main__":

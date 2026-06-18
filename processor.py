@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 
 import db
 import s3_storage
+import terminal_theme
 
 
 EXTRACTOR_VERSION = "plaintext.v2"
@@ -219,28 +220,29 @@ def process_pending(limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTR
 
     for row in rows:
         download_id = row["id"]
-        print(f"[*] Processing download {download_id}: {row.get('title')} [{row.get('format')}]")
+        terminal_theme.print_pip("pending", f"process download {download_id}: {row.get('title')} [{row.get('format')}]")
         db.mark_extraction_started(download_id, extractor)
         try:
             metadata = process_download(row, bucket_dir=bucket_dir, extractor=extractor)
             db.mark_extraction_succeeded(download_id=download_id, extractor=extractor, **metadata)
             if ARCHIVE_RAW_TO_S3 and not row.get("raw_archive_uri"):
                 try:
+                    terminal_theme.print_pip("pending", f"archive raw after extraction {download_id}")
                     archive = archive_raw_after_extraction(row, delete_local=True)
-                    print(f"    [+] Archived raw object to {archive['uri']} and removed local copy")
+                    terminal_theme.print_pip("success", f"archived raw object to {archive['uri']} and removed local copy")
                 except Exception as archive_exc:
                     db.mark_raw_archive_failed(download_id, archive_exc)
-                    print(f"    [!] Raw archive failed: {archive_exc}")
+                    terminal_theme.print_pip("failed", f"raw archive failed: {archive_exc}")
             results["processed"] += 1
-            print(f"    [+] Extracted {metadata['char_count']} chars as {metadata['category']}")
+            terminal_theme.print_pip("success", f"extracted {metadata['char_count']} chars as {metadata['category']}")
         except UnsupportedFormat as exc:
             db.mark_extraction_skipped(download_id, extractor, exc)
             results["skipped"] += 1
-            print(f"    [-] Skipped: {exc}")
+            terminal_theme.print_pip("skipped", f"skipped: {exc}")
         except Exception as exc:
             db.mark_extraction_failed(download_id, extractor, exc)
             results["failed"] += 1
-            print(f"    [!] Extraction failed: {exc}")
+            terminal_theme.print_pip("failed", f"extraction failed: {exc}")
 
     return results
 
@@ -249,17 +251,17 @@ def archive_processed_raws(limit=10, delete_local=True):
     rows = db.get_raw_archive_candidates(limit=limit)
     results = {"archived": 0, "failed": 0, "skipped": 0}
     for row in rows:
-        print(f"[*] Archiving raw download {row['id']}: {row.get('title')} [{row.get('format')}]")
+        terminal_theme.print_pip("pending", f"archive raw download {row['id']}: {row.get('title')} [{row.get('format')}]")
         try:
             archive = archive_raw_after_extraction(row, delete_local=delete_local)
             results["archived"] += 1
-            print(f"    [+] Archived to {archive['uri']}")
+            terminal_theme.print_pip("success", f"archived to {archive['uri']}")
         except FileNotFoundError as exc:
             db.mark_raw_archive_failed(row["id"], exc)
             results["skipped"] += 1
-            print(f"    [-] Local raw missing: {exc}")
+            terminal_theme.print_pip("skipped", f"local raw missing: {exc}")
         except Exception as exc:
             db.mark_raw_archive_failed(row["id"], exc)
             results["failed"] += 1
-            print(f"    [!] Raw archive failed: {exc}")
+            terminal_theme.print_pip("failed", f"raw archive failed: {exc}")
     return results

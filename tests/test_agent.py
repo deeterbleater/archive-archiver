@@ -1,5 +1,6 @@
 import io
 import os
+from unittest import mock
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -84,6 +85,16 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(self.shell.config["model"], "qwen/qwen3.7-plus")
         self.assertIn("model updated", output)
+
+    def test_exit_kills_managed_tmux_session(self):
+        with mock.patch.dict(os.environ, {"ALGE_TMUX_MANAGED": "1", "ALGE_TMUX_SESSION": "alge-test", "TMUX": "/tmp/tmux"}):
+            with mock.patch("agent.subprocess.Popen") as popen:
+                result, output = self._run("/exit")
+
+        self.assertTrue(result)
+        self.assertIn("bye", output)
+        popen.assert_called_once()
+        self.assertEqual(popen.call_args.args[0], ["tmux", "kill-session", "-t", "alge-test"])
 
     def test_memory_commands_save_and_read_context(self):
         self._run("/remember prioritize archive.org texts")

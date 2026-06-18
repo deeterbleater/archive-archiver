@@ -22,6 +22,7 @@ import downloader
 import processor
 import corpus
 import agent
+import dashboard
 import terminal_theme
 
 PUBLIC_COLLECTOR_QUERIES = [
@@ -616,6 +617,14 @@ def handle_corpus(args):
     print(f"Corpus text: {result['corpus_path']}")
     print("=================================================")
 
+
+def handle_dashboard(args):
+    dashboard.run_dashboard(
+        BANNER_LINES,
+        watch=args.watch,
+        interval=args.interval,
+    )
+
 def main():
     # Initialize DB first
     db.init_db()
@@ -713,6 +722,11 @@ def main():
     parser_corpus.add_argument("--substitutions-file", help="JSON object or list of {'from','to'} replacements.")
     parser_corpus.add_argument("--bucket-dir", default=corpus.DEFAULT_CORPUS_BUCKET_DIR, help="Filesystem-backed corpus artifact directory.")
 
+    # Sticky tmux Dashboard
+    parser_dashboard = subparsers.add_parser("dashboard", help="Render a compact live dashboard for the archiver.")
+    parser_dashboard.add_argument("--watch", action="store_true", help="Continuously refresh the dashboard.")
+    parser_dashboard.add_argument("--interval", type=float, default=2.0, help="Refresh interval in seconds for --watch.")
+
     # Interactive Agent Harness
     parser_agent = subparsers.add_parser("agent", help="Open an interactive terminal harness for directing the archiver.")
     parser_agent.add_argument(
@@ -723,7 +737,8 @@ def main():
     )
     
     args = parser.parse_args()
-    print_banner()
+    if not os.getenv("ALGE_NO_BANNER") and args.command != "dashboard":
+        print_banner()
     
     if args.command == "search":
         handle_search(args)
@@ -743,6 +758,8 @@ def main():
         handle_collect(args)
     elif args.command == "corpus":
         handle_corpus(args)
+    elif args.command == "dashboard":
+        handle_dashboard(args)
     elif args.command == "agent":
         agent.run_agent(sys.modules[__name__], command=args.agent_command)
 
