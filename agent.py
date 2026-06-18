@@ -1,9 +1,11 @@
 import argparse
 import cmd
 import json
+import select
 import shlex
 import sys
 import termios
+import threading
 import time
 import tty
 from types import SimpleNamespace
@@ -53,9 +55,10 @@ MODEL_PAGE_SIZE = 20
 
 SYSTEM_PROMPT = """
 You are ALGE, a terminal-native archive operations assistant inside the archive-archiver project.
-You can talk normally and you also have tools that operate the archive app: status, backlog, web_search, search, ingest_url, research, download, process, archive_raw, run_backlog_until_done, build_corpus, set_goal_timer, and finish_goal.
+You can talk normally and you also have tools that operate the archive app: status, backlog, web_search, search, ingest_url, add_archive, research, download, process, archive_raw, run_backlog_until_done, build_corpus, set_goal_timer, and finish_goal.
 Use tools when the user asks you to perform app work. For example, "download all backlogged works and process them" should call run_backlog_until_done.
 When the user gives a broad archival goal, use web_search to discover terminology, related people, source domains, and query expansions, then use archive search tools and the full download/process/archive workflow.
+When the user asks to add a new archive, call add_archive with its base URL and any known CSS selectors, then search with source archive_plugins. If the generic plugin cannot discover usable result links, explain that this archive needs a custom scraper plugin.
 For long tasks, keep working through tool calls until the requested task is complete, stalled, or blocked by a clear error. Report concrete counts and stopping reason.
 For explicit /goal work, set an estimated completion timer and call finish_goal only when the objective is complete or clearly blocked.
 Slash commands such as /status, /search, /download, /process, /archive-raw, /cycle, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
@@ -110,6 +113,7 @@ class ArchiveAgentShell(cmd.Cmd):
         )
         self.goal_store = goals.GoalStore()
         self.current_goal = None
+        self._goal_stop_requested = False
         self.tools = agent_tools.AppToolRunner(self)
 
     def _run_parser(self, parser, line):
@@ -231,14 +235,18 @@ class ArchiveAgentShell(cmd.Cmd):
             self.memory.append("assistant", response, {"model": self._active_model()})
         self._auto_compact()
 
-    def _run_llm_tool_loop(self, messages, max_iterations=MAX_TOOL_ITERATIONS):
+    def _run_llm_tool_loop(self, messages, max_iterations=MAX_TOOL_ITERATIONS, stop_checker=None):
         final_text = None
         for _iteration in range(max_iterations):
+            if stop_checker and stop_checker():
+                return "[goal] halted by operator."
             completion = llm.chat_completion(
                 messages,
                 model=self._active_model(),
                 tools=agent_tools.TOOL_SCHEMAS,
             )
+            if stop_checker and stop_checker():
+                return "[goal] halted by operator."
             message = completion.choices[0].message
             tool_calls = getattr(message, "tool_calls", None) or []
             content = (message.content or "").strip() if message.content else ""
@@ -252,6 +260,8 @@ class ArchiveAgentShell(cmd.Cmd):
                 print(content)
 
             for call in tool_calls:
+                if stop_checker and stop_checker():
+                    return "[goal] halted by operator."
                 function = call.function
                 try:
                     arguments = json.loads(function.arguments or "{}")
@@ -277,6 +287,8 @@ class ArchiveAgentShell(cmd.Cmd):
                     "content": agent_tools.dumps_tool_result(result),
                 })
                 final_text = agent_tools.dumps_tool_result(result)
+                if stop_checker and stop_checker():
+                    return "[goal] halted by operator."
 
             messages.append(assistant_message)
             messages.extend(tool_messages)
@@ -541,11 +553,60 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                 print(f"  - {event.get('ts')} [{event.get('kind')}] {event.get('content')}")
         print("=================================================")
 
+    def _request_goal_stop(self):
+        self._goal_stop_requested = True
+
+    def _goal_should_stop(self):
+        return self._goal_stop_requested
+
+    def _start_goal_key_watcher(self):
+        stream = self.stdin or sys.stdin
+        if not hasattr(stream, "isatty") or not stream.isatty():
+            return None
+
+        fd = stream.fileno()
+        try:
+            old_attrs = termios.tcgetattr(fd)
+        except termios.error:
+            return None
+
+        stop_watcher = threading.Event()
+
+        def watch_keys():
+            while not stop_watcher.is_set() and not self._goal_stop_requested:
+                readable, _writable, _errored = select.select([stream], [], [], 0.1)
+                if not readable:
+                    continue
+                key = stream.read(1)
+                if key in ("q", "Q"):
+                    self._request_goal_stop()
+                    print("\n[goal] halt requested; finishing current operation...")
+                    return
+
+        tty.setcbreak(fd)
+        thread = threading.Thread(target=watch_keys, daemon=True)
+        thread.start()
+
+        def cleanup():
+            stop_watcher.set()
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+            thread.join(timeout=0.2)
+
+        return cleanup
+
     def _run_goal(self, goal, max_cycles=1, sleep_seconds=0):
+        self._goal_stop_requested = False
         self.current_goal = self.goal_store.update(goal["id"], status="running")
+        cleanup_key_watcher = self._start_goal_key_watcher()
+        if cleanup_key_watcher:
+            print("[goal] running; press q to halt this goal and return to chat.")
         try:
             for _ in range(max_cycles):
                 goal = self.goal_store.get(self.current_goal["id"])
+                if self._goal_should_stop():
+                    goal = self.goal_store.update(goal["id"], status="stopped")
+                    self.goal_store.append_event(goal["id"], "stopped", "halted by q key")
+                    break
                 if goal.get("status") in ("complete", "blocked", "stopped"):
                     break
                 cycle = int(goal.get("cycles", 0)) + 1
@@ -554,22 +615,38 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                 response = self._run_llm_tool_loop(
                     self._goal_messages(goal, cycle),
                     max_iterations=MAX_GOAL_TOOL_ITERATIONS,
+                    stop_checker=self._goal_should_stop,
                 )
                 if response:
                     print(response)
                     self.goal_store.append_event(goal["id"], "assistant", response)
                 goal = self.goal_store.update(goal["id"], cycles=cycle)
                 self.current_goal = goal
+                if self._goal_should_stop():
+                    goal = self.goal_store.update(goal["id"], status="stopped")
+                    self.goal_store.append_event(goal["id"], "stopped", "halted by q key")
+                    self.current_goal = goal
+                    break
                 if goal.get("status") in ("complete", "blocked", "stopped"):
                     break
                 if sleep_seconds:
                     print(f"[goal] sleeping {sleep_seconds}s before next cycle")
-                    time.sleep(sleep_seconds)
+                    deadline = time.time() + sleep_seconds
+                    while time.time() < deadline and not self._goal_should_stop():
+                        time.sleep(min(0.25, deadline - time.time()))
+                    if self._goal_should_stop():
+                        goal = self.goal_store.update(goal["id"], status="stopped")
+                        self.goal_store.append_event(goal["id"], "stopped", "halted by q key")
+                        self.current_goal = goal
+                        break
         except KeyboardInterrupt:
             goal = self.goal_store.update(self.current_goal["id"], status="active")
             self.goal_store.append_event(goal["id"], "interrupted", "goal run interrupted by operator")
             self.current_goal = goal
             print("\n[goal] interrupted; goal remains active and can be resumed")
+        finally:
+            if cleanup_key_watcher:
+                cleanup_key_watcher()
         goal = self.goal_store.get(self.current_goal["id"])
         if goal.get("status") == "running":
             goal = self.goal_store.update(goal["id"], status="active")

@@ -84,11 +84,18 @@ def summary():
         LEFT JOIN extractions ON extractions.download_id = downloads.id
     """)
     pending = _one("""
-        SELECT COUNT(*) AS pending_download_files
+        SELECT COUNT(DISTINCT files.work_id) AS pending_download_files
         FROM files
         LEFT JOIN downloads ON downloads.file_id = files.id
         WHERE COALESCE(files.download_url, files.url, '') <> ''
           AND downloads.id IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM files sibling_files
+              JOIN downloads sibling_downloads
+                ON sibling_downloads.file_id = sibling_files.id
+              WHERE sibling_files.work_id = files.work_id
+          )
     """)
     return {**base, **extra, **pending}
 

@@ -80,17 +80,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(raw_archives[0]["status"], "local")
 
     def test_summary_separates_pending_and_failed_downloads(self):
-        work_id = db.add_work("Download States", "Test Author", "states")
+        pending_work_id = db.add_work("Pending State", "Test Author", "states")
         db.add_file(
-            work_id=work_id,
+            work_id=pending_work_id,
             site="example.org",
             format="Text",
             url="https://example.org/pending",
             download_source="fixture",
             download_url="https://example.org/pending.txt",
         )
+        failed_work_id = db.add_work("Failed State", "Test Author", "states")
         db.add_file(
-            work_id=work_id,
+            work_id=failed_work_id,
             site="example.org",
             format="PDF",
             url="https://example.org/failed",

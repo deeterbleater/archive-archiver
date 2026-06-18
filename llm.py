@@ -9,6 +9,7 @@ load_dotenv()
 
 # Default free models on OpenRouter
 DEFAULT_MODEL = "qwen/qwen3.7-plus"
+DEFAULT_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "60"))
 
 def get_openrouter_client():
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -17,7 +18,9 @@ def get_openrouter_client():
         
     return OpenAI(
         base_url="https://openrouter.ai/api/v1",
-        api_key=api_key
+        api_key=api_key,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+        max_retries=1,
     )
 
 def chat_with_llm(messages, model=None, temperature=0.4):

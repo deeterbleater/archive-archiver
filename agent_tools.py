@@ -5,6 +5,7 @@ import re
 from types import SimpleNamespace
 import urllib.parse
 
+import archive_plugins
 import corpus
 import db
 import downloader
@@ -73,6 +74,30 @@ TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {"url": {"type": "string"}},
                 "required": ["url"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_archive",
+            "description": "Register a searchable archive plugin. Use CSS selectors when known; otherwise the generic link extractor will be used.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "base_url": {"type": "string"},
+                    "search_url_template": {
+                        "type": "string",
+                        "description": "Search URL containing {query}, for example https://example.org/search?q={query}.",
+                    },
+                    "result_selector": {"type": "string"},
+                    "link_selector": {"type": "string"},
+                    "title_selector": {"type": "string"},
+                    "trust_level": {"type": "string", "enum": ["trusted", "untrusted"]},
+                },
+                "required": ["name", "base_url"],
                 "additionalProperties": False,
             },
         },
@@ -219,6 +244,7 @@ class AppToolRunner:
             "web_search": self.web_search,
             "search": self.search,
             "ingest_url": self.ingest_url,
+            "add_archive": self.add_archive,
             "research": self.research,
             "download": self.download,
             "process": self.process,
@@ -346,18 +372,51 @@ class AppToolRunner:
         return {"ok": True, "engine": "duckduckgo", "query": query, "results": results}
 
     def search(self, query, max_results=None, sources=None):
-        args = self._namespace(
-            query=query,
-            max_results=max_results or self.shell.config["max_results"],
-            sources=sources or self.shell.config["sources"],
-        )
-        output = self._capture(self.shell.cli.handle_search, args)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.shell.cli.perform_crawl(
+                query,
+                self.shell.config["model"],
+                max_results or self.shell.config["max_results"],
+                sources=sources or self.shell.config["sources"],
+                should_stop=getattr(self.shell, "_goal_should_stop", None),
+            )
+        output = output.getvalue()
         return {"ok": True, "output": output[-8000:], "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
 
     def ingest_url(self, url):
         args = self._namespace(url=url)
         output = self._capture(self.shell.cli.handle_url, args)
         return {"ok": True, "output": output[-8000:], "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
+
+    def add_archive(
+        self,
+        name,
+        base_url,
+        search_url_template=None,
+        result_selector=None,
+        link_selector=None,
+        title_selector=None,
+        trust_level="untrusted",
+    ):
+        plugin = archive_plugins.add_plugin(
+            name=name,
+            base_url=base_url,
+            search_url_template=search_url_template,
+            result_selector=result_selector,
+            link_selector=link_selector,
+            title_selector=title_selector,
+            trust_level=trust_level,
+        )
+        if "archive_plugins" not in self.shell.config["sources"]:
+            self.shell.config["sources"].append("archive_plugins")
+        plugins = archive_plugins.load_plugins()
+        return {
+            "ok": True,
+            "archive": plugin,
+            "archive_count": len(plugins),
+            "usage": "Search this archive by including source 'archive_plugins' in the search tool.",
+        }
 
     def research(self, topic, max_results=None, sources=None):
         args = self._namespace(

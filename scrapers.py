@@ -6,6 +6,8 @@ import time
 import random
 import xml.etree.ElementTree as ET
 
+import file_selection
+
 
 SLUM_ARCHIVE_MIRRORS = [
     {"name": "Anna's Archive GL", "group": "annas_archive", "url": "https://annas-archive.gl/"},
@@ -175,6 +177,10 @@ def get_archive_org_files(identifier):
     except Exception as e:
         print(f"[!] Error fetching Archive.org metadata for {identifier}: {e}")
     return []
+
+
+def select_best_file(rows):
+    return file_selection.select_best_file(rows)
 
 
 def search_arxiv(query, max_results=10):

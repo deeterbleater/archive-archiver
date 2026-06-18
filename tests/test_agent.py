@@ -7,9 +7,11 @@ from pathlib import Path
 
 import agent
 import agent_tools
+import archive_plugins
 import cli
 import db
 import goals
+import llm
 import memory
 
 
@@ -25,8 +27,11 @@ class AgentHarnessTests(unittest.TestCase):
         self.shell.memory = memory.MemoryStore(path=memory_path)
         goal_path = Path(self.tempdir.name) / "goals.json"
         self.shell.goal_store = goals.GoalStore(path=goal_path)
+        self.old_archive_registry = archive_plugins.DEFAULT_REGISTRY_PATH
+        archive_plugins.DEFAULT_REGISTRY_PATH = str(Path(self.tempdir.name) / "archive_plugins.json")
 
     def tearDown(self):
+        archive_plugins.DEFAULT_REGISTRY_PATH = self.old_archive_registry
         db.DB_FILE = self.old_db_file
         self.tempdir.cleanup()
 
@@ -113,6 +118,40 @@ class AgentHarnessTests(unittest.TestCase):
         updated = self.shell.goal_store.get(goal["id"])
         self.assertIsNotNone(updated["estimated_completion_at"])
         self.assertEqual(result["duration_seconds"], 7200)
+
+    def test_add_archive_tool_registers_plugin_source(self):
+        result = self.shell.tools.add_archive(
+            name="Fixture Archive",
+            base_url="https://fixture.example",
+            search_url_template="https://fixture.example/search?q={query}",
+            result_selector=".result",
+            link_selector="a",
+            title_selector=".title",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["archive"]["slug"], "fixture_archive")
+        self.assertIn("archive_plugins", self.shell.config["sources"])
+        plugins = archive_plugins.load_plugins()
+        self.assertEqual(len(plugins), 1)
+        self.assertEqual(plugins[0]["base_url"], "https://fixture.example")
+
+    def test_goal_tool_loop_honors_stop_checker_before_model_call(self):
+        original_chat_completion = llm.chat_completion
+
+        def fail_chat_completion(*_args, **_kwargs):
+            raise AssertionError("chat_completion should not be called after goal stop")
+
+        try:
+            llm.chat_completion = fail_chat_completion
+            result = self.shell._run_llm_tool_loop(
+                [{"role": "user", "content": "keep going"}],
+                stop_checker=lambda: True,
+            )
+        finally:
+            llm.chat_completion = original_chat_completion
+
+        self.assertIn("halted by operator", result)
 
     @unittest.skipUnless(os.getenv("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY is required for live compaction")
     def test_forced_compaction_creates_summary(self):

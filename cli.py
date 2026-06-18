@@ -15,6 +15,7 @@ def print(*args, **kwargs):
 load_dotenv()
 
 import db
+import archive_plugins
 import scrapers
 import llm
 import downloader
@@ -36,7 +37,7 @@ PUBLIC_COLLECTOR_QUERIES = [
 ]
 
 DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack")
-ALL_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack", "annas_archive", "slum_archives")
+ALL_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack", "annas_archive", "slum_archives", "archive_plugins")
 
 BANNER = """░░      ░░░  ░░░░░░░░░      ░░░        ░░░░░░░
 ▒  ▒▒▒▒  ▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒▒▒▒▒
@@ -48,17 +49,49 @@ ____Agentic Lexicon Generation Engine____0.1__"""
 def print_banner():
     print(BANNER)
 
-def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
+
+def _add_best_file(work_id, files, base_url, site, default_source, trust_level="trusted"):
+    if db.work_has_archive_activity(work_id):
+        print("      [=] Work already has archive activity; skipping duplicate download candidate.")
+        return None
+
+    best = scrapers.select_best_file(files)
+    if not best:
+        return None
+
+    f_url = urllib.parse.urljoin(base_url, best.get("url", ""))
+    f_dl_url = urllib.parse.urljoin(base_url, best.get("download_url", ""))
+    db.add_file(
+        work_id=work_id,
+        site=site,
+        format=best.get("format", "Unknown"),
+        url=f_url,
+        file_size=best.get("file_size"),
+        download_source=best.get("download_source", default_source),
+        download_url=f_dl_url,
+        trust_level=trust_level,
+    )
+    return best
+
+
+def _stop_requested(should_stop):
+    return bool(should_stop and should_stop())
+
+
+def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=None):
     sources = set(sources)
     print(f"[*] Searching archives for: '{query}'...")
     
     # 1. ARCHIVE.ORG SEARCH
-    if "archive_org" in sources:
+    if "archive_org" in sources and not _stop_requested(should_stop):
         print("[*] Querying Archive.org Search API...")
         archive_docs = scrapers.search_archive_org(query)
         # Filter Archive.org files to only top max_results docs
         print(f"[+] Found {len(archive_docs)} matching documents on Archive.org. Processing top {max_results}...")
         for doc in archive_docs[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
             identifier = doc.get("identifier")
             if not identifier:
                 continue
@@ -70,29 +103,33 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
                     author=doc.get("creator", "Unknown"),
                     search_query=query
                 )
-                for f in files:
-                    db.add_file(
-                        work_id=work_id,
-                        site=f["site"],
-                        format=f["format"],
-                        url=f["url"],
-                        file_size=f["file_size"],
-                        download_source=f["download_source"],
-                        download_url=f["download_url"]
-                    )
-                print(f"      [+] Logged {len(files)} versions/files for this work.")
+                best = _add_best_file(
+                    work_id,
+                    files,
+                    f"https://archive.org/details/{identifier}",
+                    "archive.org",
+                    "Archive.org HTTP",
+                )
+                if best:
+                    print(f"      [+] Logged preferred version: [{best.get('format')}] {best.get('download_url')}")
             
     # 2. ARXIV SEARCH
-    if "arxiv" in sources:
+    if "arxiv" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying arXiv API...")
         arxiv_results = scrapers.search_arxiv(query, max_results=max_results)
         print(f"[+] Found {len(arxiv_results)} matching papers on arXiv. Processing top {max_results}...")
         for paper in arxiv_results[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
             work_id = db.add_work(
                 title=paper["title"],
                 author=paper.get("author"),
                 search_query=query,
             )
+            if db.work_has_archive_activity(work_id):
+                print(f"      [=] Skipping duplicate arXiv paper already in archive: '{paper['title']}'")
+                continue
             db.add_file(
                 work_id=work_id,
                 site=paper["site"],
@@ -105,16 +142,22 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
             print(f"      [+] Logged arXiv paper: '{paper['title']}'")
 
     # 3. SUBSTACK SEARCH
-    if "substack" in sources:
+    if "substack" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying Substack search...")
         substack_results = scrapers.search_substack(query)
         print(f"[+] Found {len(substack_results)} matching Substack posts. Processing top {max_results}...")
         for post in substack_results[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
             work_id = db.add_work(
                 title=post["title"],
                 author=post.get("author"),
                 search_query=query,
             )
+            if db.work_has_archive_activity(work_id):
+                print(f"      [=] Skipping duplicate Substack post already in archive: '{post['title']}'")
+                continue
             db.add_file(
                 work_id=work_id,
                 site=post["site"],
@@ -127,11 +170,14 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
             print(f"      [+] Logged Substack post: '{post['title']}'")
 
     # 4. THE ANARCHIST LIBRARY SEARCH
-    if "anarchist_library" in sources:
+    if "anarchist_library" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying The Anarchist Library...")
         al_results = scrapers.search_anarchist_library(query)
         print(f"[+] Found {len(al_results)} search results on The Anarchist Library. Analyzing top {max_results}...")
         for res in al_results[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
             url = res["url"]
             print(f"    - Scraping and analyzing: {url}...")
             html = scrapers.fetch_url(url)
@@ -153,30 +199,29 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
                 work_id = db.add_work(title=title, author=author, search_query=query)
                 
                 files = parsed_data.get("files", [])
-                for f in files:
-                    # Resolve relative url if any
-                    f_url = urllib.parse.urljoin(url, f.get("url", ""))
-                    f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
-                    
-                    db.add_file(
-                        work_id=work_id,
-                        site="theanarchistlibrary.org",
-                        format=f.get("format", "Unknown"),
-                        url=f_url,
-                        file_size=f.get("file_size"),
-                        download_source=f.get("download_source", "Anarchist Library"),
-                        download_url=f_dl_url
-                    )
-                print(f"      [+] Logged work: '{title}' with {len(files)} download versions.")
+                best = _add_best_file(
+                    work_id,
+                    files,
+                    url,
+                    "theanarchistlibrary.org",
+                    "Anarchist Library",
+                )
+                if best:
+                    print(f"      [+] Logged work: '{title}' with preferred [{best.get('format')}] version.")
+                else:
+                    print(f"      [!] No downloadable version found for: '{title}'")
             else:
                 print("      [!] LLM failed to parse or extract structure.")
             
     # 5. ANNA'S ARCHIVE SEARCH
-    if "annas_archive" in sources:
+    if "annas_archive" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying Anna's Archive...")
         annas_results = scrapers.search_annas_archive(query)
         print(f"[+] Found {len(annas_results)} search results on Anna's Archive. Analyzing top {max_results}...")
         for res in annas_results[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
             url = res["url"]
             print(f"    - Scraping and analyzing: {url}...")
             html = scrapers.fetch_url(url)
@@ -198,29 +243,29 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
                 work_id = db.add_work(title=title, author=author, search_query=query)
                 
                 files = parsed_data.get("files", [])
-                for f in files:
-                    f_url = urllib.parse.urljoin(url, f.get("url", ""))
-                    f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
-                    
-                    db.add_file(
-                        work_id=work_id,
-                        site="annas-archive.org",
-                        format=f.get("format", "Unknown"),
-                        url=f_url,
-                        file_size=f.get("file_size"),
-                        download_source=f.get("download_source", "Anna's Archive Mirror"),
-                        download_url=f_dl_url
-                    )
-                print(f"      [+] Logged work: '{title}' with {len(files)} download versions.")
+                best = _add_best_file(
+                    work_id,
+                    files,
+                    url,
+                    "annas-archive.org",
+                    "Anna's Archive Mirror",
+                )
+                if best:
+                    print(f"      [+] Logged work: '{title}' with preferred [{best.get('format')}] version.")
+                else:
+                    print(f"      [!] No downloadable version found for: '{title}'")
             else:
                 print("      [!] LLM failed to parse or extract structure.")
 
     # 6. OPEN-SLUM MIRROR SET
-    if "slum_archives" in sources:
+    if "slum_archives" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying Open SLUM mirror set...")
         slum_results = scrapers.search_slum_archives(query)
         print(f"[+] Found {len(slum_results)} candidate results across SLUM mirrors. Analyzing top {max_results}...")
         for res in slum_results[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
             url = res["url"]
             print(f"    - Scraping and analyzing untrusted source: {url}...")
             html = scrapers.fetch_url(url, retries=1, delay=0.2)
@@ -244,21 +289,62 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
                 parsed_uri = urllib.parse.urlparse(url)
                 site = parsed_uri.netloc or res.get("site") or "slum-archive"
                 files = parsed_data.get("files", [])
-                for f in files:
-                    f_url = urllib.parse.urljoin(url, f.get("url", ""))
-                    f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
+                best = _add_best_file(
+                    work_id,
+                    files,
+                    url,
+                    site,
+                    res.get("source_name", "Open SLUM mirror"),
+                    trust_level="untrusted",
+                )
+                if best:
+                    print(f"      [+] Logged untrusted work: '{title}' with preferred [{best.get('format')}] version.")
+                else:
+                    print(f"      [!] No downloadable version found for: '{title}'")
+            else:
+                print("      [!] LLM failed to parse or extract structure.")
 
-                    db.add_file(
-                        work_id=work_id,
-                        site=site,
-                        format=f.get("format", "Unknown"),
-                        url=f_url,
-                        file_size=f.get("file_size"),
-                        download_source=f.get("download_source", res.get("source_name", "Open SLUM mirror")),
-                        download_url=f_dl_url,
-                        trust_level="untrusted",
-                    )
-                print(f"      [+] Logged untrusted work: '{title}' with {len(files)} download versions.")
+    # 7. CONFIGURED ARCHIVE PLUGINS
+    if "archive_plugins" in sources and not _stop_requested(should_stop):
+        print("\n[*] Querying configured archive plugins...")
+        plugin_results = archive_plugins.search_plugins(query)
+        print(f"[+] Found {len(plugin_results)} candidate results across configured archive plugins. Analyzing top {max_results}...")
+        for res in plugin_results[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
+            url = res["url"]
+            print(f"    - Scraping and analyzing plugin source: {url}...")
+            html = scrapers.fetch_url(url, retries=1, delay=0.2)
+            if not html:
+                print("      [!] Failed to fetch content.")
+                continue
+
+            cleaned = scrapers.clean_html(html)
+            print("      [*] Analyzing page with OpenRouter LLM...")
+            try:
+                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+            except ValueError as ve:
+                print(f"      [!] LLM skipped: {ve}")
+                parsed_data = None
+
+            if parsed_data and parsed_data.get("title"):
+                title = parsed_data["title"]
+                author = parsed_data.get("author")
+                work_id = db.add_work(title=title, author=author, search_query=query)
+                files = parsed_data.get("files", [])
+                best = _add_best_file(
+                    work_id,
+                    files,
+                    url,
+                    res.get("site") or urllib.parse.urlparse(url).netloc or "archive-plugin",
+                    res.get("source_name", "Archive plugin"),
+                    trust_level=res.get("trust_level", "untrusted"),
+                )
+                if best:
+                    print(f"      [+] Logged plugin work: '{title}' with preferred [{best.get('format')}] version.")
+                else:
+                    print(f"      [!] No downloadable version found for: '{title}'")
             else:
                 print("      [!] LLM failed to parse or extract structure.")
 
@@ -350,24 +436,20 @@ def handle_url(args):
     domain = parsed_uri.netloc or "direct-url"
     
     files = parsed_data.get("files", [])
-    for f in files:
-        f_url = urllib.parse.urljoin(args.url, f.get("url", ""))
-        f_dl_url = urllib.parse.urljoin(args.url, f.get("download_url", ""))
-        
-        db.add_file(
-            work_id=work_id,
-            site=domain,
-            format=f.get("format", "Unknown"),
-            url=f_url,
-            file_size=f.get("file_size"),
-            download_source=f.get("download_source", "Direct URL Mirror"),
-            download_url=f_dl_url
-        )
+    best = _add_best_file(
+        work_id,
+        files,
+        args.url,
+        domain,
+        "Direct URL Mirror",
+    )
         
     print(f"\n[+] Successfully logged work: '{title}' by {author}")
-    print(f"[+] Added {len(files)} files/versions to database.")
-    for f in files:
-        print(f"    - [{f.get('format')}] Source: {f.get('download_source')} ({f.get('file_size')})")
+    if best:
+        print("[+] Added preferred file/version to database.")
+        print(f"    - [{best.get('format')}] Source: {best.get('download_source')} ({best.get('file_size')})")
+    else:
+        print("[!] No downloadable file/version was added.")
 
 def handle_status(args):
     stats = db.get_stats()

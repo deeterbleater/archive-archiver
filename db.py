@@ -1,6 +1,8 @@
 import os
 import sqlite3
 
+import file_selection
+
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "archive_works.db")
 
 def get_connection():
@@ -210,6 +212,27 @@ def add_work(title, author=None, search_query=None):
     conn.close()
     return work_id
 
+
+def work_has_archive_activity(work_id):
+    """Returns true once a work has any download or plaintext extraction state."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT 1
+    FROM files
+    LEFT JOIN downloads ON downloads.file_id = files.id
+    LEFT JOIN extractions ON extractions.download_id = downloads.id
+    WHERE files.work_id = ?
+      AND (
+          downloads.id IS NOT NULL
+          OR extractions.id IS NOT NULL
+      )
+    LIMIT 1
+    """, (work_id,))
+    found = cursor.fetchone() is not None
+    conn.close()
+    return found
+
 def add_file(work_id, site, format, url, file_size=None, download_source=None, download_url=None, trust_level="trusted"):
     """
     Adds a file record for a work. Performs an upsert if the file already exists.
@@ -290,12 +313,19 @@ def get_backlog_counts(extractor="plaintext.v2"):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT COUNT(*)
+    SELECT COUNT(DISTINCT files.work_id)
     FROM files
     LEFT JOIN downloads ON downloads.file_id = files.id
     WHERE
         COALESCE(files.download_url, files.url, '') <> ''
         AND downloads.id IS NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM files sibling_files
+            JOIN downloads sibling_downloads
+              ON sibling_downloads.file_id = sibling_files.id
+            WHERE sibling_files.work_id = files.work_id
+        )
     """)
     pending_downloads = cursor.fetchone()[0]
 
@@ -336,7 +366,7 @@ def get_backlog_counts(extractor="plaintext.v2"):
     }
 
 def get_pending_download_files(limit=10):
-    """Returns file records that have not yet had a download attempt."""
+    """Returns one preferred pending file per work with no prior download attempt."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -353,13 +383,27 @@ def get_pending_download_files(limit=10):
     WHERE
         COALESCE(files.download_url, files.url, '') <> ''
         AND downloads.id IS NULL
-    ORDER BY files.id ASC
-    LIMIT ?
-    """, (limit,))
+        AND NOT EXISTS (
+            SELECT 1
+            FROM files sibling_files
+            JOIN downloads sibling_downloads
+              ON sibling_downloads.file_id = sibling_files.id
+            WHERE sibling_files.work_id = files.work_id
+        )
+    ORDER BY files.work_id ASC, files.id ASC
+    """)
 
-    rows = [dict(row) for row in cursor.fetchall()]
+    candidates = [dict(row) for row in cursor.fetchall()]
     conn.close()
-    return rows
+
+    by_work = {}
+    for row in candidates:
+        by_work.setdefault(row["work_id"], []).append(row)
+    rows = [
+        file_selection.select_best_file(work_rows)
+        for _work_id, work_rows in sorted(by_work.items())
+    ]
+    return [row for row in rows if row][:limit]
 
 def mark_download_started(file_id):
     """Creates or updates the download row when a worker starts a file."""

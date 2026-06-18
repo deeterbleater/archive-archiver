@@ -96,6 +96,52 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(db.get_backlog_counts()["pending_downloads"], 0)
         self.assertEqual(db.get_backlog_counts()["failed_downloads"], 1)
 
+    def test_pending_downloads_choose_one_preferred_file_per_work(self):
+        work_id = db.add_work(title="Many Formats", author="Test Author", search_query="formats")
+        db.add_file(
+            work_id=work_id,
+            site="example.org",
+            format="PDF",
+            url="https://example.org/detail",
+            file_size="10 MB",
+            download_source="fixture",
+            download_url="https://example.org/work.pdf",
+        )
+        db.add_file(
+            work_id=work_id,
+            site="example.org",
+            format="Text",
+            url="https://example.org/detail",
+            file_size="500 KB",
+            download_source="fixture",
+            download_url="https://example.org/work.txt",
+        )
+
+        pending = db.get_pending_download_files(limit=10)
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["format"], "Text")
+
+    def test_existing_archived_work_does_not_reenter_pending_downloads(self):
+        self._add_processed_text("Archived Once", "Already in plaintext.")
+        work_id = db.add_work(title="Archived Once", author="Test Author", search_query="duplicate")
+
+        self.assertTrue(db.work_has_archive_activity(work_id))
+
+        db.add_file(
+            work_id=work_id,
+            site="mirror.example",
+            format="Text",
+            url="https://mirror.example/archived-once",
+            file_size="20 bytes",
+            download_source="fixture",
+            download_url="https://mirror.example/archived-once.txt",
+        )
+
+        pending = db.get_pending_download_files(limit=10)
+
+        self.assertFalse(any(row["work_id"] == work_id for row in pending))
+
     def test_corpus_build_is_deterministic_and_records_substitutions(self):
         self._add_processed_text("Beta", "The self owns the text.")
         self._add_processed_text("Alpha", "The text owns the order.")
@@ -137,17 +183,18 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(downloader.download_domain(row), "cdn.example")
 
     def test_domain_workers_process_one_queue_per_domain(self):
-        work_id = db.add_work(title="Domain Fixture", author="Test Author", search_query="domains")
+        alpha_work_id = db.add_work(title="Alpha Domain Fixture", author="Test Author", search_query="domains")
         db.add_file(
-            work_id=work_id,
+            work_id=alpha_work_id,
             site="alpha.example",
             format="Text",
             url="https://alpha.example/detail",
             download_source="fixture",
             download_url="https://alpha.example/a.txt",
         )
+        beta_work_id = db.add_work(title="Beta Domain Fixture", author="Test Author", search_query="domains")
         db.add_file(
-            work_id=work_id,
+            work_id=beta_work_id,
             site="beta.example",
             format="Text",
             url="https://beta.example/detail",

@@ -71,6 +71,32 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertIn("arxiv", cli.ALL_SOURCES)
         self.assertIn("substack", cli.ALL_SOURCES)
 
+    def test_select_best_file_prefers_plaintext_over_heavier_formats(self):
+        rows = [
+            {
+                "format": "PDF",
+                "file_size": "12 MB",
+                "url": "https://example.org/detail",
+                "download_url": "https://example.org/work.pdf",
+            },
+            {
+                "format": "EPUB",
+                "file_size": "2 MB",
+                "url": "https://example.org/detail",
+                "download_url": "https://example.org/work.epub",
+            },
+            {
+                "format": "Text",
+                "file_size": "900 KB",
+                "url": "https://example.org/detail",
+                "download_url": "https://example.org/work.txt",
+            },
+        ]
+
+        best = scrapers.select_best_file(rows)
+
+        self.assertEqual(best["format"], "Text")
+
 
 if __name__ == "__main__":
     unittest.main()
