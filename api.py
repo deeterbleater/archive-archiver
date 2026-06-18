@@ -70,7 +70,12 @@ def summary():
             COALESCE(SUM(downloads.bytes), 0) AS downloaded_bytes,
             COALESCE(SUM(extractions.char_count), 0) AS extracted_chars,
             COUNT(DISTINCT CASE WHEN downloads.status = 'downloaded' THEN downloads.file_id END) AS downloaded_files,
-            COUNT(DISTINCT CASE WHEN extractions.status = 'processed' THEN extractions.id END) AS processed_texts
+            COUNT(DISTINCT CASE WHEN extractions.status = 'processed' THEN extractions.id END) AS processed_texts,
+            COUNT(DISTINCT CASE WHEN files.trust_level = 'untrusted' THEN files.id END) AS untrusted_files,
+            COUNT(DISTINCT CASE WHEN downloads.scan_status = 'clean' THEN downloads.id END) AS clean_scans,
+            COUNT(DISTINCT CASE WHEN downloads.scan_status = 'infected' THEN downloads.id END) AS infected_scans,
+            COUNT(DISTINCT CASE WHEN downloads.scan_status = 'unavailable' THEN downloads.id END) AS unavailable_scans,
+            COUNT(DISTINCT CASE WHEN downloads.quarantine_uri IS NOT NULL THEN downloads.id END) AS quarantined_files
         FROM files
         LEFT JOIN downloads ON downloads.file_id = files.id
         LEFT JOIN extractions ON extractions.download_id = downloads.id
@@ -94,6 +99,10 @@ def site_breakdown():
             COUNT(files.id) AS files,
             COUNT(CASE WHEN downloads.status = 'downloaded' THEN 1 END) AS downloaded,
             COUNT(CASE WHEN downloads.status = 'failed' THEN 1 END) AS failed_downloads,
+            COUNT(CASE WHEN files.trust_level = 'untrusted' THEN 1 END) AS untrusted,
+            COUNT(CASE WHEN downloads.scan_status = 'clean' THEN 1 END) AS clean_scans,
+            COUNT(CASE WHEN downloads.scan_status = 'infected' THEN 1 END) AS infected_scans,
+            COUNT(CASE WHEN downloads.scan_status = 'unavailable' THEN 1 END) AS unavailable_scans,
             COUNT(CASE WHEN extractions.status = 'processed' THEN 1 END) AS processed,
             COALESCE(SUM(downloads.bytes), 0) AS bytes,
             COALESCE(SUM(extractions.char_count), 0) AS chars
@@ -139,6 +148,25 @@ def category_breakdown():
     """)
 
 
+@app.get("/viz/breakdowns/trust")
+def trust_breakdown():
+    return _rows("""
+        SELECT
+            files.trust_level,
+            COUNT(*) AS files,
+            COUNT(CASE WHEN downloads.status = 'downloaded' THEN 1 END) AS downloaded,
+            COUNT(CASE WHEN downloads.status = 'failed' THEN 1 END) AS failed_downloads,
+            COUNT(CASE WHEN downloads.scan_status = 'clean' THEN 1 END) AS clean_scans,
+            COUNT(CASE WHEN downloads.scan_status = 'infected' THEN 1 END) AS infected_scans,
+            COUNT(CASE WHEN downloads.scan_status = 'unavailable' THEN 1 END) AS unavailable_scans,
+            COUNT(CASE WHEN downloads.quarantine_uri IS NOT NULL THEN 1 END) AS quarantined
+        FROM files
+        LEFT JOIN downloads ON downloads.file_id = files.id
+        GROUP BY files.trust_level
+        ORDER BY files DESC
+    """)
+
+
 @app.get("/viz/status/downloads")
 def download_status():
     return _rows("""
@@ -155,6 +183,16 @@ def extraction_status():
         SELECT status, COUNT(*) AS count
         FROM extractions
         GROUP BY status
+        ORDER BY count DESC
+    """)
+
+
+@app.get("/viz/status/scans")
+def scan_status():
+    return _rows("""
+        SELECT COALESCE(scan_status, 'unscanned') AS status, COUNT(*) AS count
+        FROM downloads
+        GROUP BY COALESCE(scan_status, 'unscanned')
         ORDER BY count DESC
     """)
 
@@ -222,8 +260,13 @@ def recent_activity(limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT)):
                 downloads.bytes,
                 downloads.updated_at,
                 downloads.downloaded_at,
+                downloads.scan_status,
+                downloads.scan_engine,
+                downloads.scan_signature,
+                downloads.quarantine_uri,
                 files.site,
                 files.format,
+                files.trust_level,
                 works.title,
                 works.author
             FROM downloads
@@ -307,6 +350,10 @@ def get_work(work_id: int):
             downloads.bucket_uri,
             downloads.storage_key,
             downloads.http_status,
+            COALESCE(downloads.scan_status, 'unscanned') AS scan_status,
+            downloads.scan_engine,
+            downloads.scan_signature,
+            downloads.quarantine_uri,
             extractions.id AS extraction_id,
             extractions.status AS extraction_status,
             extractions.category,
@@ -356,11 +403,16 @@ def list_files(
             files.file_size,
             files.url,
             files.download_url,
+            files.trust_level,
             works.title,
             works.author,
             COALESCE(downloads.status, 'pending') AS download_status,
             downloads.bytes,
             downloads.http_status,
+            COALESCE(downloads.scan_status, 'unscanned') AS scan_status,
+            downloads.scan_engine,
+            downloads.scan_signature,
+            downloads.quarantine_uri,
             COALESCE(extractions.status, 'pending') AS extraction_status,
             extractions.category,
             extractions.char_count
@@ -401,6 +453,8 @@ def dimensions():
     return {
         "sites": _rows("SELECT site, COUNT(*) AS count FROM files GROUP BY site ORDER BY count DESC"),
         "formats": _rows("SELECT format, COUNT(*) AS count FROM files GROUP BY format ORDER BY count DESC"),
+        "trust_levels": _rows("SELECT trust_level, COUNT(*) AS count FROM files GROUP BY trust_level ORDER BY count DESC"),
+        "scan_statuses": _rows("SELECT COALESCE(scan_status, 'unscanned') AS status, COUNT(*) AS count FROM downloads GROUP BY COALESCE(scan_status, 'unscanned') ORDER BY count DESC"),
         "categories": _rows("""
             SELECT category, COUNT(*) AS count
             FROM extractions

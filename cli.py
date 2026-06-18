@@ -36,7 +36,7 @@ PUBLIC_COLLECTOR_QUERIES = [
 ]
 
 DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library")
-ALL_SOURCES = ("archive_org", "anarchist_library", "annas_archive")
+ALL_SOURCES = ("archive_org", "anarchist_library", "annas_archive", "slum_archives")
 
 def print_banner():
     print("=========================================")
@@ -163,6 +163,53 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES):
                         download_url=f_dl_url
                     )
                 print(f"      [+] Logged work: '{title}' with {len(files)} download versions.")
+            else:
+                print("      [!] LLM failed to parse or extract structure.")
+
+    # 4. OPEN-SLUM MIRROR SET
+    if "slum_archives" in sources:
+        print("\n[*] Querying Open SLUM mirror set...")
+        slum_results = scrapers.search_slum_archives(query)
+        print(f"[+] Found {len(slum_results)} candidate results across SLUM mirrors. Analyzing top {max_results}...")
+        for res in slum_results[:max_results]:
+            url = res["url"]
+            print(f"    - Scraping and analyzing untrusted source: {url}...")
+            html = scrapers.fetch_url(url, retries=1, delay=0.2)
+            if not html:
+                print("      [!] Failed to fetch content.")
+                continue
+
+            cleaned = scrapers.clean_html(html)
+            print("      [*] Analyzing page with OpenRouter LLM...")
+            try:
+                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+            except ValueError as ve:
+                print(f"      [!] LLM skipped: {ve}")
+                parsed_data = None
+
+            if parsed_data and parsed_data.get("title"):
+                title = parsed_data["title"]
+                author = parsed_data.get("author")
+                work_id = db.add_work(title=title, author=author, search_query=query)
+
+                parsed_uri = urllib.parse.urlparse(url)
+                site = parsed_uri.netloc or res.get("site") or "slum-archive"
+                files = parsed_data.get("files", [])
+                for f in files:
+                    f_url = urllib.parse.urljoin(url, f.get("url", ""))
+                    f_dl_url = urllib.parse.urljoin(url, f.get("download_url", ""))
+
+                    db.add_file(
+                        work_id=work_id,
+                        site=site,
+                        format=f.get("format", "Unknown"),
+                        url=f_url,
+                        file_size=f.get("file_size"),
+                        download_source=f.get("download_source", res.get("source_name", "Open SLUM mirror")),
+                        download_url=f_dl_url,
+                        trust_level="untrusted",
+                    )
+                print(f"      [+] Logged untrusted work: '{title}' with {len(files)} download versions.")
             else:
                 print("      [!] LLM failed to parse or extract structure.")
 
@@ -293,6 +340,12 @@ def handle_status(args):
             print(f"  - {status}: {count}")
     else:
         print("  - none")
+    print("\nQuarantine Scans by Status:")
+    if stats.get("scans_by_status"):
+        for status, count in stats["scans_by_status"].items():
+            print(f"  - {status}: {count}")
+    else:
+        print("  - none")
     print(f"\nCorpus Builds: {stats['total_corpus_builds']}")
     print("=================================================")
 
@@ -306,6 +359,7 @@ def handle_download(args):
             max_bytes=max_bytes,
             max_domains=args.max_domains,
             per_domain_limit=args.per_domain_limit,
+            quarantine_dir=args.quarantine_dir,
         )
     else:
         results = downloader.download_pending(
@@ -313,6 +367,7 @@ def handle_download(args):
             bucket_dir=args.bucket_dir,
             requests_per_second=args.rps,
             max_bytes=max_bytes,
+            quarantine_dir=args.quarantine_dir,
         )
     print("\n================ DOWNLOAD SUMMARY ===============")
     for status, count in results.items():
@@ -357,6 +412,7 @@ def handle_collect(args):
             max_bytes=max_bytes,
             max_domains=args.max_domains,
             per_domain_limit=args.per_domain_limit,
+            quarantine_dir=args.quarantine_dir,
         )
         process_results = processor.process_pending(
             limit=args.process_limit,
@@ -453,6 +509,7 @@ def main():
     parser_download = subparsers.add_parser("download", help="Download logged files into the raw object bucket.")
     parser_download.add_argument("--limit", type=int, default=10, help="Maximum files to download in this run.")
     parser_download.add_argument("--bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR, help="Filesystem-backed raw bucket directory.")
+    parser_download.add_argument("--quarantine-dir", default=downloader.DEFAULT_QUARANTINE_BUCKET_DIR, help="Filesystem-backed quarantine bucket directory.")
     parser_download.add_argument("--rps", type=float, default=0.2, help="Per-host requests per second. Default is 0.2, or one request every five seconds.")
     parser_download.add_argument("--max-mb", type=int, default=250, help="Maximum size per file in MB. Use 0 for no limit.")
     parser_download.add_argument("--domain-workers", action="store_true", help="Run one sequential worker per download domain.")
@@ -481,6 +538,7 @@ def main():
     parser_collect.add_argument("--download-limit", type=int, default=100, help="Maximum files to download per cycle.")
     parser_collect.add_argument("--process-limit", type=int, default=100, help="Maximum downloads to process per cycle.")
     parser_collect.add_argument("--raw-bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR, help="Filesystem-backed raw bucket directory.")
+    parser_collect.add_argument("--quarantine-dir", default=downloader.DEFAULT_QUARANTINE_BUCKET_DIR, help="Filesystem-backed quarantine bucket directory.")
     parser_collect.add_argument("--text-bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
     parser_collect.add_argument("--rps", type=float, default=0.2, help="Per-domain download requests per second.")
     parser_collect.add_argument("--max-mb", type=int, default=250, help="Maximum size per file in MB. Use 0 for no limit.")

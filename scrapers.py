@@ -5,6 +5,25 @@ import urllib.parse
 import time
 import random
 
+
+SLUM_ARCHIVE_MIRRORS = [
+    {"name": "Anna's Archive GL", "group": "annas_archive", "url": "https://annas-archive.gl/"},
+    {"name": "Anna's Archive VG", "group": "annas_archive", "url": "https://annas-archive.vg/"},
+    {"name": "Anna's Archive PK", "group": "annas_archive", "url": "https://annas-archive.pk/"},
+    {"name": "Anna's Archive GD", "group": "annas_archive", "url": "https://annas-archive.gd/"},
+    {"name": "Libgen+ BZ", "group": "libgen_plus", "url": "https://libgen.bz/"},
+    {"name": "Libgen+ LA", "group": "libgen_plus", "url": "https://libgen.la/"},
+    {"name": "Libgen+ GL", "group": "libgen_plus", "url": "https://libgen.gl/"},
+    {"name": "Libgen+ VG", "group": "libgen_plus", "url": "https://libgen.vg/"},
+    {"name": "Z-Library SK", "group": "zlibrary", "url": "https://z-library.sk/"},
+    {"name": "1lib SK", "group": "zlibrary", "url": "https://1lib.sk/"},
+    {"name": "z-lib GL", "group": "zlibrary", "url": "https://z-lib.gl/"},
+    {"name": "go-to-library.sk", "group": "zlibrary_info", "url": "https://go-to-library.sk/"},
+    {"name": "library-access.sk", "group": "zlibrary_info", "url": "https://library-access.sk/"},
+    {"name": "Liber3", "group": "other", "url": "https://liber3.eth.limo/"},
+    {"name": "Memory of the World", "group": "other", "url": "https://library.memoryoftheworld.org/"},
+]
+
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -215,3 +234,73 @@ def search_annas_archive(query, mirror="https://annas-archive.li"):
                 })
                 
     return results[:10]
+
+
+def _candidate_search_urls(mirror, query):
+    base = mirror["url"].rstrip("/")
+    encoded = urllib.parse.quote(query)
+    if mirror["group"] == "annas_archive":
+        return [f"{base}/search?q={encoded}"]
+    if mirror["group"] == "libgen_plus":
+        return [
+            f"{base}/index.php?req={encoded}",
+            f"{base}/search.php?req={encoded}",
+        ]
+    if mirror["group"] == "zlibrary":
+        return [
+            f"{base}/s/{encoded}",
+            f"{base}/search/{encoded}",
+            f"{base}/?q={encoded}",
+        ]
+    return [
+        f"{base}/?q={encoded}",
+        f"{base}/search?q={encoded}",
+    ]
+
+
+def _extract_detail_links(html, base_url, query, mirror):
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    terms = [term.lower() for term in re.findall(r"[A-Za-z0-9]{4,}", query)[:5]]
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
+        full_url = urllib.parse.urljoin(base_url, href)
+        parsed = urllib.parse.urlparse(full_url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if mirror["group"] == "annas_archive" and "/md5/" not in parsed.path:
+            continue
+        if mirror["group"] != "annas_archive" and terms and not any(term in text.lower() or term in full_url.lower() for term in terms):
+            continue
+        if full_url not in [row["url"] for row in results]:
+            results.append({
+                "title": text or mirror["name"],
+                "url": full_url,
+                "site": parsed.netloc,
+                "source_name": mirror["name"],
+                "trust_level": "untrusted",
+            })
+        if len(results) >= 5:
+            break
+    return results
+
+
+def search_slum_archives(query, mirrors=None):
+    """
+    Searches the less-trusted mirrors listed by open-slum.org.
+    Each mirror is isolated: outage, timeout, or unexpected markup returns no
+    results for that mirror without failing the whole source.
+    """
+    mirrors = mirrors or SLUM_ARCHIVE_MIRRORS
+    all_results = []
+    for mirror in mirrors:
+        for search_url in _candidate_search_urls(mirror, query):
+            html = fetch_url(search_url, retries=1, delay=0.2)
+            if not html:
+                continue
+            results = _extract_detail_links(html, search_url, query, mirror)
+            if results:
+                all_results.extend(results)
+                break
+    return all_results

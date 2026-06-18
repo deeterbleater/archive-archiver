@@ -45,11 +45,27 @@ Run the broader research coordinator:
 python cli.py research "19th century egoist philosophy" --max-results 2
 ```
 
+Query the less-trusted Open SLUM mirror set:
+
+```sh
+python cli.py search "political economy" --sources slum_archives --max-results 2
+```
+
+`slum_archives` covers the mirrors listed by `https://open-slum.org/`,
+including Anna's Archive mirrors, Libgen+ mirrors, Z-Library/info mirrors,
+Liber3, and Memory of the World. Each mirror is queried independently so an
+outage or unexpected page shape logs a warning and does not fail the whole run.
+
 Download pending file rows into the raw bucket:
 
 ```sh
 python cli.py download --limit 10 --rps 0.2 --max-mb 250
 ```
+
+Downloads are written to quarantine first, scanned, and only then promoted to
+the raw bucket. Files discovered through `slum_archives` are marked
+`untrusted`; if `clamscan` is unavailable for an untrusted file, the download is
+left in quarantine and marked failed instead of entering `bucket/raw`.
 
 Process downloaded raw objects into plaintext:
 
@@ -169,6 +185,7 @@ window if metadata is unavailable. You can tune this per session:
 By default, artifacts are written under `bucket/`, which is ignored by git:
 
 - `bucket/raw`: raw downloaded files
+- `bucket/quarantine`: downloaded files awaiting or failing scan
 - `bucket/text`: extracted plaintext
 - `bucket/corpora`: corpus manifests and concatenated corpus text
 

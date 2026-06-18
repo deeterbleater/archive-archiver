@@ -102,6 +102,11 @@ def init_db():
     _ensure_column(cursor, "downloads", "final_url", "TEXT")
     _ensure_column(cursor, "downloads", "etag", "TEXT")
     _ensure_column(cursor, "downloads", "last_modified", "TEXT")
+    _ensure_column(cursor, "files", "trust_level", "TEXT NOT NULL DEFAULT 'trusted'")
+    _ensure_column(cursor, "downloads", "scan_status", "TEXT")
+    _ensure_column(cursor, "downloads", "scan_engine", "TEXT")
+    _ensure_column(cursor, "downloads", "scan_signature", "TEXT")
+    _ensure_column(cursor, "downloads", "quarantine_uri", "TEXT")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS corpus_specs (
@@ -200,7 +205,7 @@ def add_work(title, author=None, search_query=None):
     conn.close()
     return work_id
 
-def add_file(work_id, site, format, url, file_size=None, download_source=None, download_url=None):
+def add_file(work_id, site, format, url, file_size=None, download_source=None, download_url=None, trust_level="trusted"):
     """
     Adds a file record for a work. Performs an upsert if the file already exists.
     """
@@ -214,19 +219,21 @@ def add_file(work_id, site, format, url, file_size=None, download_source=None, d
         download_source = str(download_source)
     if download_url is not None:
         download_url = str(download_url)
+    trust_level = str(trust_level or "trusted")
         
     conn = get_connection()
     cursor = conn.cursor()
     
     cursor.execute("""
-    INSERT INTO files (work_id, site, format, url, file_size, download_source, download_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO files (work_id, site, format, url, file_size, download_source, download_url, trust_level)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(work_id, format, url) DO UPDATE SET
         file_size = excluded.file_size,
         download_source = excluded.download_source,
         download_url = excluded.download_url,
-        site = excluded.site
-    """, (work_id, site, format, url, file_size, download_source, download_url))
+        site = excluded.site,
+        trust_level = excluded.trust_level
+    """, (work_id, site, format, url, file_size, download_source, download_url, trust_level))
     
     conn.commit()
     conn.close()
@@ -251,6 +258,9 @@ def get_stats():
     cursor.execute("SELECT status, COUNT(*) FROM extractions GROUP BY status")
     extractions_by_status = {row[0]: row[1] for row in cursor.fetchall()}
 
+    cursor.execute("SELECT COALESCE(scan_status, 'unscanned'), COUNT(*) FROM downloads GROUP BY COALESCE(scan_status, 'unscanned')")
+    scans_by_status = {row[0]: row[1] for row in cursor.fetchall()}
+
     cursor.execute("SELECT COUNT(*) FROM corpus_builds")
     total_corpus_builds = cursor.fetchone()[0]
     
@@ -261,6 +271,7 @@ def get_stats():
         "files_by_site": files_by_site,
         "downloads_by_status": downloads_by_status,
         "extractions_by_status": extractions_by_status,
+        "scans_by_status": scans_by_status,
         "total_corpus_builds": total_corpus_builds,
     }
 
@@ -317,6 +328,10 @@ def mark_download_succeeded(
     final_url=None,
     etag=None,
     last_modified=None,
+    scan_status=None,
+    scan_engine=None,
+    scan_signature=None,
+    quarantine_uri=None,
 ):
     """Persists the raw-object location and hash for a completed download."""
     conn = get_connection()
@@ -334,6 +349,10 @@ def mark_download_succeeded(
         etag = ?,
         last_modified = ?,
         http_status = ?,
+        scan_status = ?,
+        scan_engine = ?,
+        scan_signature = ?,
+        quarantine_uri = ?,
         error = NULL,
         updated_at = CURRENT_TIMESTAMP,
         downloaded_at = CURRENT_TIMESTAMP
@@ -348,12 +367,16 @@ def mark_download_succeeded(
         etag,
         last_modified,
         http_status,
+        scan_status,
+        scan_engine,
+        scan_signature,
+        quarantine_uri,
         file_id,
     ))
     conn.commit()
     conn.close()
 
-def mark_download_failed(file_id, error, http_status=None):
+def mark_download_failed(file_id, error, http_status=None, scan_status=None, scan_engine=None, scan_signature=None, quarantine_uri=None):
     """Records a failed download attempt without deleting prior manifest data."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -363,9 +386,13 @@ def mark_download_failed(file_id, error, http_status=None):
         status = 'failed',
         error = ?,
         http_status = ?,
+        scan_status = COALESCE(?, scan_status),
+        scan_engine = COALESCE(?, scan_engine),
+        scan_signature = COALESCE(?, scan_signature),
+        quarantine_uri = COALESCE(?, quarantine_uri),
         updated_at = CURRENT_TIMESTAMP
     WHERE file_id = ?
-    """, (str(error)[:1000], http_status, file_id))
+    """, (str(error)[:1000], http_status, scan_status, scan_engine, scan_signature, quarantine_uri, file_id))
     conn.commit()
     conn.close()
 

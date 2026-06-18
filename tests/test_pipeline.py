@@ -137,7 +137,7 @@ class PipelineStateTests(unittest.TestCase):
         seen_domains = []
         original_download_file = downloader.download_file
 
-        def fake_download_file(row, bucket_dir, limiter, max_bytes):
+        def fake_download_file(row, bucket_dir, limiter, max_bytes, quarantine_dir=None):
             seen_domains.append(downloader.download_domain(row))
             return {
                 "bucket_uri": "file:///tmp/fake.txt",
@@ -149,6 +149,10 @@ class PipelineStateTests(unittest.TestCase):
                 "final_url": row["download_url"],
                 "etag": None,
                 "last_modified": None,
+                "scan_status": "clean",
+                "scan_engine": "fixture",
+                "scan_signature": None,
+                "quarantine_uri": "file:///tmp/quarantine.txt",
             }
 
         try:

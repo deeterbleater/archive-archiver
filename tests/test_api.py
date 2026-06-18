@@ -41,6 +41,8 @@ class ApiTests(unittest.TestCase):
             content_type="text/plain",
             http_status=200,
             final_url="https://example.org/work.txt",
+            scan_status="clean",
+            scan_engine="fixture",
         )
         download_id = db.get_pending_extractions(limit=1, extractor="plaintext.v2")[0]["id"]
         db.mark_extraction_started(download_id, "plaintext.v2")
@@ -60,12 +62,18 @@ class ApiTests(unittest.TestCase):
         summary = self.api.summary()
         sites = self.api.site_breakdown()
         categories = self.api.category_breakdown()
+        scans = self.api.scan_status()
+        trust = self.api.trust_breakdown()
 
         self.assertEqual(summary["total_works"], 1)
         self.assertEqual(summary["downloaded_bytes"], 12)
         self.assertEqual(summary["extracted_chars"], 42)
+        self.assertEqual(summary["clean_scans"], 1)
+        self.assertEqual(summary["quarantined_files"], 0)
         self.assertEqual(sites[0]["site"], "example.org")
         self.assertEqual(categories[0]["category"], "philosophy")
+        self.assertEqual(scans[0]["status"], "clean")
+        self.assertEqual(trust[0]["trust_level"], "trusted")
 
     def test_work_drilldown(self):
         work_id = self._add_fixture()
@@ -75,6 +83,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["title"], "API Fixture")
         self.assertEqual(payload["files"][0]["download_status"], "downloaded")
         self.assertEqual(payload["files"][0]["extraction_status"], "processed")
+        self.assertEqual(payload["files"][0]["scan_status"], "clean")
+        self.assertEqual(payload["files"][0]["trust_level"], "trusted")
 
 
 if __name__ == "__main__":

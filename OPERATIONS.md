@@ -25,17 +25,20 @@ OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
 2. Discovery queries Archive.org and The Anarchist Library.
 3. Archive.org metadata is parsed directly.
 4. The Anarchist Library pages are parsed with OpenRouter via `llm.py`.
-5. File records are written to SQLite.
-6. Downloader workers process pending files.
-7. Downloads are grouped by domain: one sequential worker per domain.
-8. Downloaded raw files are written under `bucket/raw`.
-9. Text extraction writes plaintext under `bucket/text`.
-10. `api.py` exposes read-only status and visualization endpoints.
+5. Optional less-trusted discovery queries the Open SLUM mirror set.
+6. File records are written to SQLite.
+7. Downloader workers process pending files.
+8. Downloads are grouped by domain: one sequential worker per domain.
+9. Incoming bytes are written under `bucket/quarantine` first.
+10. Clean scanned files are promoted into `bucket/raw`.
+11. Text extraction writes plaintext under `bucket/text`.
+12. `api.py` exposes read-only status and visualization endpoints.
 
 ## Local Buckets
 
 ```text
 bucket/raw       raw downloaded files
+bucket/quarantine downloaded files before scan/promotion
 bucket/text      extracted plaintext files
 bucket/corpora   built corpus manifests and concatenated text
 ```
@@ -341,6 +344,28 @@ python cli.py download --domain-workers \
   --per-domain-limit 3 \
   --rps 0.05
 ```
+
+Run discovery against less-trusted Open SLUM mirrors:
+
+```sh
+python cli.py search "political economy" --sources slum_archives --max-results 2
+```
+
+The `slum_archives` source uses the mirror list published by
+`https://open-slum.org/`: Anna's Archive mirrors, Libgen+ mirrors,
+Z-Library/info mirrors, Liber3, and Memory of the World. Each mirror is isolated
+with short retries; a down host returns no candidates for that host without
+failing the run.
+
+Quarantine and scanning:
+
+- Quarantine bucket: `bucket/quarantine`
+- Raw bucket: `bucket/raw`
+- Scanner command: `clamscan` from `PATH`, or `ARCHIVE_CLAMSCAN_BIN`
+- Trusted sources may continue if the scanner is unavailable.
+- `slum_archives` files are marked `untrusted` and fail closed if scanning is
+  unavailable.
+- Detected malware remains in quarantine and is not promoted into `bucket/raw`.
 
 Run only text extraction:
 
