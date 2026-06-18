@@ -20,6 +20,7 @@ import llm
 import downloader
 import processor
 import corpus
+import agent
 
 PUBLIC_COLLECTOR_QUERIES = [
     "public domain philosophy",
@@ -498,6 +499,15 @@ def main():
     parser_corpus.add_argument("--limit", type=int, help="Maximum processed texts to include.")
     parser_corpus.add_argument("--substitutions-file", help="JSON object or list of {'from','to'} replacements.")
     parser_corpus.add_argument("--bucket-dir", default=corpus.DEFAULT_CORPUS_BUCKET_DIR, help="Filesystem-backed corpus artifact directory.")
+
+    # Interactive Agent Harness
+    parser_agent = subparsers.add_parser("agent", help="Open an interactive terminal harness for directing the archiver.")
+    parser_agent.add_argument(
+        "--command",
+        "-c",
+        dest="agent_command",
+        help="Run one agent-harness command and exit, e.g. -c 'status' or -c 'download --limit 5'.",
+    )
     
     args = parser.parse_args()
     print_banner()
@@ -518,6 +528,8 @@ def main():
         handle_collect(args)
     elif args.command == "corpus":
         handle_corpus(args)
+    elif args.command == "agent":
+        agent.run_agent(sys.modules[__name__], command=args.agent_command)
 
 if __name__ == "__main__":
     main()

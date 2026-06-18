@@ -116,14 +116,25 @@ Repo copy:
 /root/archive-archiver/systemd/archive-api.service
 ```
 
-The API listens on:
+The API listens locally on:
 
 ```text
 http://127.0.0.1:8090
 ```
 
-It is bound to `0.0.0.0:8090` in systemd, but local access should use
-`127.0.0.1:8090` unless a reverse proxy is configured.
+It is bound to `0.0.0.0:8090` in systemd, but direct local checks should use
+`127.0.0.1:8090`.
+
+The public HTTPS route on this server is:
+
+```text
+https://api.ufotoken.app
+```
+
+Nginx owns TLS for that domain and proxies requests to
+`http://127.0.0.1:8090`. This domain previously routed to another completed
+project on port `8080`; the route is now available for Archive Archiver's
+read-only visualization API.
 
 Commands:
 
@@ -222,6 +233,7 @@ Example checks:
 
 ```sh
 curl -s http://127.0.0.1:8090/summary
+curl -s https://api.ufotoken.app/summary
 curl -s http://127.0.0.1:8090/viz/breakdowns/sites
 ```
 
@@ -251,6 +263,74 @@ python cli.py --max-results 2 collect --once \
   --rps 0.05 \
   --sources archive_org anarchist_library
 ```
+
+Open the terminal agent harness:
+
+```sh
+python cli.py agent
+```
+
+Or use the repo-local launcher:
+
+```sh
+/root/archive-archiver/bin/alge
+```
+
+Install a global `alge` command on this server:
+
+```sh
+ln -sf /root/archive-archiver/bin/alge /usr/local/bin/alge
+```
+
+Useful harness commands:
+
+```text
+/status
+/config
+/set max-results 2
+/set sources archive_org anarchist_library
+/search "public domain political economy"
+/download --limit 50 --domain-workers --max-domains 4 --per-domain-limit 3 --rps 0.05
+/process --limit 50
+/cycle --query "public domain philosophy" --download-limit 50 --process-limit 50
+/corpus public-v1 --ordering title --limit 100
+/remember focus next cycle on OCR Search Text
+/memory --limit 20
+/context --refresh
+/compact --force
+/exit
+```
+
+Run one harness command non-interactively:
+
+```sh
+alge -c "/status"
+```
+
+Harness memory:
+
+- Saved context log: `logs/agent_memory.jsonl`
+- OpenRouter model metadata cache: `logs/openrouter_models.json`
+- Default fallback context window: `32768` estimated tokens
+- Default automatic compaction threshold: `55%` of the context window
+
+Useful memory commands:
+
+```text
+/remember TEXT
+/memory --search TEXT
+/context
+/context --refresh
+/compact --force
+/memory --clear
+/set compaction-ratio 0.50
+/set memory-path logs/agent_memory.jsonl
+```
+
+The harness checks OpenRouter's public model metadata for `context_length` once
+memory grows beyond the conservative fallback threshold. If the metadata call
+fails, compaction still works with the fallback window and a local deterministic
+summary.
 
 Run only downloads with domain workers:
 
@@ -300,7 +380,7 @@ venv/bin/python -m py_compile api.py cli.py db.py downloader.py llm.py processor
 - Failed torrent downloads from Archive.org are expected occasionally. HTTP 403
   on `Archive BitTorrent` rows does not imply the whole cycle failed.
 - Port `8080` is already occupied by a docker proxy on this server, so the API
-  uses port `8090`.
+  uses port `8090`. Nginx routes `https://api.ufotoken.app` to port `8090`.
 - Runtime logs are ignored by git via `logs/`.
 - The local database and buckets are ignored by git via `archive_works.db` and
   `bucket/`.

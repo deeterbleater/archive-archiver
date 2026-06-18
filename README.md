@@ -95,6 +95,75 @@ Show pipeline status:
 python cli.py status
 ```
 
+Open the terminal agent harness:
+
+```sh
+python cli.py agent
+```
+
+Or use the repo-local launcher:
+
+```sh
+bin/alge
+```
+
+For a global `alge` command on this server:
+
+```sh
+ln -sf /root/archive-archiver/bin/alge /usr/local/bin/alge
+```
+
+The harness gives you an `alge>` prompt for directing the pipeline without
+remembering every full command. Common commands include:
+
+```text
+/status
+/config
+/set sources archive_org anarchist_library
+/search "max stirner" --max-results 3
+/download --limit 10 --domain-workers
+/process --limit 10
+/cycle --query "public domain philosophy" --download-limit 20 --process-limit 20
+/corpus egoism-v1 --query egoist --ordering title
+/remember prioritize archive.org text formats
+/memory --search archive.org
+/context --refresh
+/compact --force
+/exit
+```
+
+Run one harness command without entering the prompt:
+
+```sh
+alge -c "/status"
+```
+
+## Harness Memory
+
+The `alge` harness saves command context and operator notes to
+`logs/agent_memory.jsonl`. Use slash commands to work with that memory:
+
+```text
+/remember TEXT
+/memory --limit 20
+/memory --search TEXT
+/context
+/compact --force
+/memory --clear
+```
+
+The harness estimates saved-context size and compacts automatically when memory
+passes a configurable share of the active model context window. It uses
+OpenRouter's public model metadata endpoint to read `context_length` when the
+local estimate is large enough to need compaction, and falls back to a 32k-token
+window if metadata is unavailable. You can tune this per session:
+
+```text
+/set model z-ai/glm-5.2
+/set compaction-ratio 0.55
+/set memory-path logs/agent_memory.jsonl
+```
+
 ## Local Buckets
 
 By default, artifacts are written under `bucket/`, which is ignored by git:
