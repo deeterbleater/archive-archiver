@@ -108,6 +108,17 @@ def _looks_like_torrent(file_row, url):
     return "torrent" in fmt or "torrent" in source or path.endswith(".torrent")
 
 
+def _is_bulk_torrent_url(url):
+    text = str(url or "").lower()
+    bulk_markers = (
+        "/torrents/managed_by_aa/",
+        "pilimi-",
+        "zlib2-",
+        "libgen-",
+    )
+    return any(marker in text for marker in bulk_markers)
+
+
 def _request_proxies_for_url(url, tor_proxy=None):
     if not _is_onion_url(url):
         return None
@@ -381,6 +392,8 @@ def download_file(
     if not url:
         raise ValueError("file row has no download_url or url")
     if _looks_like_torrent(file_row, url):
+        if _is_bulk_torrent_url(url):
+            raise ValueError(f"refusing bulk archive torrent as single-work download: {url}")
         return _download_torrent_payload(
             file_row,
             url,

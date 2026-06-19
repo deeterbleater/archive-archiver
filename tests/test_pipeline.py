@@ -530,6 +530,23 @@ class PipelineStateTests(unittest.TestCase):
                     quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
                 )
 
+    def test_bulk_archive_torrent_is_rejected_as_single_work(self):
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "annas-archive.org",
+            "format": "EPUB",
+            "download_source": "Torrent (Bulk)",
+            "download_url": "https://annas-archive.gl/dyn/small_file/torrents/managed_by_aa/zlib/pilimi-zlib2-17250000-17339999.torrent",
+        }
+
+        with self.assertRaisesRegex(ValueError, "bulk archive torrent"):
+            downloader.download_file(
+                row,
+                bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+            )
+
     def test_domain_workers_process_one_queue_per_domain(self):
         alpha_work_id = db.add_work(title="Alpha Domain Fixture", author="Test Author", search_query="domains")
         db.add_file(
