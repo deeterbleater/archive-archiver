@@ -680,7 +680,7 @@ def get_backlog_counts(extractor="plaintext.v2"):
      AND extractions.extractor = ?
     WHERE
         downloads.status = 'downloaded'
-        AND (extractions.id IS NULL OR extractions.status = 'failed')
+        AND extractions.id IS NULL
     """, (extractor,))
     pending_extractions = cursor.fetchone()[0]
 
@@ -841,7 +841,7 @@ def mark_download_failed(file_id, error, http_status=None, scan_status=None, sca
     conn.close()
 
 def get_pending_extractions(limit=10, extractor="plaintext.v1"):
-    """Returns downloaded objects that have not been processed by this extractor."""
+    """Returns downloaded objects with no extraction attempt for this extractor."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -864,7 +864,7 @@ def get_pending_extractions(limit=10, extractor="plaintext.v1"):
      AND extractions.extractor = ?
     WHERE
         downloads.status = 'downloaded'
-        AND (extractions.id IS NULL OR extractions.status = 'failed')
+        AND extractions.id IS NULL
     ORDER BY downloads.id ASC
     LIMIT ?
     """, (extractor, limit))

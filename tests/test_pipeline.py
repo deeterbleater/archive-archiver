@@ -204,6 +204,36 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["format"], "Text")
 
+    def test_failed_extractions_fall_off_pending_backlog(self):
+        work_id = db.add_work(title="Bad Extraction", author="Test Author", search_query="failures")
+        db.add_file(
+            work_id=work_id,
+            site="example.org",
+            format="PDF",
+            url="https://example.org/bad",
+            download_source="fixture",
+            download_url="https://example.org/bad.pdf",
+        )
+        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        db.mark_download_started(file_id)
+        db.mark_download_succeeded(
+            file_id=file_id,
+            bucket_uri=(Path(self.tempdir.name) / "bad.pdf").resolve().as_uri(),
+            storage_key="bad.pdf",
+            sha256="raw-sha",
+            byte_count=3,
+            content_type="application/pdf",
+            http_status=200,
+            final_url="https://example.org/bad.pdf",
+        )
+        download_id = db.get_pending_extractions(limit=1, extractor="plaintext.v2")[0]["id"]
+        db.mark_extraction_started(download_id, "plaintext.v2")
+        db.mark_extraction_failed(download_id, "plaintext.v2", "broken pdf")
+
+        self.assertEqual(db.get_pending_extractions(limit=10, extractor="plaintext.v2"), [])
+        self.assertEqual(db.get_backlog_counts("plaintext.v2")["pending_extractions"], 0)
+        self.assertEqual(db.get_stats()["extractions_by_status"], {"failed": 1})
+
     def test_dynamic_category_is_created_when_defaults_do_not_match(self):
         row = {
             "title": "Thelema Ritual Notes",
