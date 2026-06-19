@@ -59,6 +59,43 @@ class AnnasRerunScriptTests(unittest.TestCase):
         self.assertEqual(rows[0]["work_id"], work_id)
         self.assertEqual(rerun_annas_affected.query_for_work(rows[0]), "Stubbed Anna Work Ada Author")
 
+    def test_affected_works_skips_stub_resolved_by_processed_duplicate(self):
+        self._add_stubbed_work()
+        replacement_id = db.add_work("Stubbed Anna Work", "Ada Author", "anna repair")
+        db.add_file(
+            work_id=replacement_id,
+            site="archive.org",
+            format="Text",
+            url="https://archive.org/details/stubbedannawork",
+            download_url="https://archive.org/download/stubbedannawork/stubbedannawork.txt",
+        )
+        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        db.mark_download_started(file_id)
+        db.mark_download_succeeded(
+            file_id=file_id,
+            bucket_uri="file:///tmp/stubbedannawork.txt",
+            storage_key="stubbedannawork.txt",
+            sha256="replacement-sha",
+            byte_count=1024,
+            content_type="text/plain",
+            http_status=200,
+            final_url="https://archive.org/download/stubbedannawork/stubbedannawork.txt",
+        )
+        download_id = db.get_pending_extractions(limit=1, extractor="plaintext.v2")[0]["id"]
+        db.mark_extraction_started(download_id, "plaintext.v2")
+        db.mark_extraction_succeeded(
+            download_id,
+            "plaintext.v2",
+            "file:///tmp/stubbedannawork-plain.txt",
+            "text-sha",
+            1024,
+            "uncategorized",
+        )
+
+        rows = rerun_annas_affected.affected_works(db_file=db.DB_FILE)
+
+        self.assertEqual(rows, [])
+
     def test_alge_command_uses_cycle_with_targeted_sources(self):
         class Args:
             sources = ["annas_archive", "libgen"]

@@ -11,6 +11,7 @@ and optionally archive raw originals.
 import argparse
 import os
 from pathlib import Path
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -42,6 +43,10 @@ def _connect(db_file):
     conn = sqlite3.connect(db_file)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _normalize_match_text(value):
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
 def affected_works(db_file=DB_FILE, include_resolved=False, limit=None):
@@ -85,6 +90,8 @@ def affected_works(db_file=DB_FILE, include_resolved=False, limit=None):
             continue
         if not include_resolved and work_has_usable_text(conn, item["work_id"]):
             continue
+        if not include_resolved and matching_work_has_usable_text(conn, item):
+            continue
         works.setdefault(item["work_id"], item)
         if limit and len(works) >= limit:
             break
@@ -105,6 +112,36 @@ def work_has_usable_text(conn, work_id):
     LIMIT 1
     """, (work_id,)).fetchone()
     return row is not None
+
+
+def matching_work_has_usable_text(conn, item):
+    title_key = _normalize_match_text(item.get("title"))
+    author_key = _normalize_match_text(item.get("author"))
+    if len(title_key) < 8:
+        return False
+
+    rows = conn.execute("""
+    SELECT works.id, works.title, works.author
+    FROM works
+    JOIN files ON files.work_id = works.id
+    JOIN downloads ON downloads.file_id = files.id
+    JOIN extractions ON extractions.download_id = downloads.id
+    WHERE works.id != ?
+      AND extractions.status = 'processed'
+      AND extractions.text_uri IS NOT NULL
+      AND COALESCE(extractions.quality_status, 'usable') != 'unusable'
+    """, (item["work_id"],)).fetchall()
+
+    for row in rows:
+        candidate_title = _normalize_match_text(row["title"])
+        if title_key != candidate_title:
+            continue
+        if not author_key:
+            return True
+        candidate_author = _normalize_match_text(row["author"])
+        if not candidate_author or author_key in candidate_author or candidate_author in author_key:
+            return True
+    return False
 
 
 def query_for_work(row):
