@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import archive_plugins
 import db
 
 
@@ -11,11 +12,14 @@ class ApiTests(unittest.TestCase):
         self.old_db_file = db.DB_FILE
         db.DB_FILE = str(Path(self.tempdir.name) / "archive_works.db")
         db.init_db()
+        self.old_archive_registry = archive_plugins.DEFAULT_REGISTRY_PATH
+        archive_plugins.DEFAULT_REGISTRY_PATH = str(Path(self.tempdir.name) / "archive_plugins.json")
 
         import api
         self.api = api
 
     def tearDown(self):
+        archive_plugins.DEFAULT_REGISTRY_PATH = self.old_archive_registry
         db.DB_FILE = self.old_db_file
         self.tempdir.cleanup()
 
@@ -80,6 +84,21 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(scans[0]["status"], "clean")
         self.assertEqual(trust[0]["trust_level"], "trusted")
         self.assertEqual(raw_archives[0]["status"], "local")
+
+    def test_site_breakdown_includes_known_and_configured_zero_count_archives(self):
+        archive_plugins.add_plugin(
+            name="No Files Yet",
+            base_url="https://new-archive.example",
+            path=archive_plugins.DEFAULT_REGISTRY_PATH,
+        )
+
+        sites = {row["site"]: row for row in self.api.site_breakdown()}
+
+        self.assertIn("annas-archive.org", sites)
+        self.assertIn("libgen.bz", sites)
+        self.assertIn("new-archive.example", sites)
+        self.assertEqual(sites["new-archive.example"]["files"], 0)
+        self.assertEqual(sites["new-archive.example"]["works"], 0)
 
     def test_category_breakdown_rolls_invalid_dynamic_names_into_uncategorized(self):
         work_id = db.add_work("Junk Category Fixture", "Test Author", "test query")

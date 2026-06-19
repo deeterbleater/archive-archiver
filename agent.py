@@ -576,7 +576,7 @@ class ArchiveAgentShell(cmd.Cmd):
             terminal_theme.print_markup(f"[success][+][/success] model updated: [highlight]{selected}[/highlight] [muted](context {context_length})[/muted]")
 
     def do_set(self, line):
-        """Set a session default: /set model MODEL | /set max-results N | /set sources archive_org anarchist_library arxiv substack."""
+        """Set a session default: /set model MODEL | /set max-results N | /set sources archive_org anarchist_library arxiv substack annas_archive libgen."""
         argv = _split(line)
         if argv is None:
             return

@@ -279,11 +279,12 @@ def search_anarchist_library(query):
                 
     return results[:10] # limit to top 10
 
-def search_annas_archive(query, mirror="https://annas-archive.li"):
+def _search_annas_archive_mirror(query, mirror):
     """
-    Searches Anna's Archive mirror for a query.
+    Searches one Anna's Archive mirror for a query.
     Returns detail page URLs found on the search result page.
     """
+    mirror = mirror.rstrip("/")
     search_url = f"{mirror}/search?q={urllib.parse.quote(query)}"
     html = fetch_url(search_url)
     if not html:
@@ -309,6 +310,36 @@ def search_annas_archive(query, mirror="https://annas-archive.li"):
                 })
                 
     return results[:10]
+
+
+def search_annas_archive(query, mirrors=None):
+    """
+    Searches Anna's Archive mirrors for a query. Mirrors are isolated so a down
+    host does not fail the whole source.
+    """
+    if mirrors is None:
+        mirrors = [
+            mirror["url"] for mirror in SLUM_ARCHIVE_MIRRORS
+            if mirror.get("group") == "annas_archive"
+        ]
+        mirrors = list(mirrors) + ["https://annas-archive.li"]
+    else:
+        mirrors = list(mirrors)
+    rows = []
+    seen = set()
+    for mirror in mirrors:
+        try:
+            mirror_rows = _search_annas_archive_mirror(query, mirror)
+        except Exception:
+            continue
+        for row in mirror_rows:
+            if row["url"] in seen:
+                continue
+            seen.add(row["url"])
+            rows.append(row)
+        if len(rows) >= 10:
+            break
+    return rows[:10]
 
 
 def search_substack(query):
@@ -523,7 +554,12 @@ def _extract_detail_links(html, base_url, query, mirror):
             continue
         if mirror["group"] == "annas_archive" and "/md5/" not in parsed.path:
             continue
-        if mirror["group"] != "annas_archive" and terms and not any(term in text.lower() or term in full_url.lower() for term in terms):
+        if mirror["group"] == "libgen_plus":
+            if not parsed.path.endswith("/edition.php") or not urllib.parse.parse_qs(parsed.query).get("id"):
+                continue
+            if not text or text.isdigit() or len(text) < 6:
+                continue
+        elif mirror["group"] != "annas_archive" and terms and not any(term in text.lower() or term in full_url.lower() for term in terms):
             continue
         if full_url not in [row["url"] for row in results]:
             results.append({
@@ -556,3 +592,12 @@ def search_slum_archives(query, mirrors=None):
                 all_results.extend(results)
                 break
     return all_results
+
+
+def search_libgen(query, mirrors=None):
+    """Search only the LibGen mirror subset from the SLUM mirror catalog."""
+    mirrors = mirrors or [
+        mirror for mirror in SLUM_ARCHIVE_MIRRORS
+        if mirror.get("group") == "libgen_plus"
+    ]
+    return search_slum_archives(query, mirrors=mirrors)

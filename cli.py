@@ -38,8 +38,25 @@ PUBLIC_COLLECTOR_QUERIES = [
     "ethics public domain",
 ]
 
-DEFAULT_PUBLIC_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack")
-ALL_SOURCES = ("archive_org", "anarchist_library", "arxiv", "substack", "annas_archive", "slum_archives", "archive_plugins")
+DEFAULT_PUBLIC_SOURCES = (
+    "archive_org",
+    "anarchist_library",
+    "arxiv",
+    "substack",
+    "annas_archive",
+    "libgen",
+    "archive_plugins",
+)
+ALL_SOURCES = (
+    "archive_org",
+    "anarchist_library",
+    "arxiv",
+    "substack",
+    "annas_archive",
+    "libgen",
+    "slum_archives",
+    "archive_plugins",
+)
 
 BANNER_LINES = [
     "░░      ░░░  ░░░░░░░░░      ░░░        ░░░░░░░",
@@ -259,6 +276,55 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 )
                 if best:
                     print(f"      [+] Logged work: '{title}' with preferred [{best.get('format')}] version.")
+                else:
+                    print(f"      [!] No downloadable version found for: '{title}'")
+            else:
+                print("      [!] LLM failed to parse or extract structure.")
+
+    # 6. LIBGEN MIRROR SEARCH
+    if "libgen" in sources and not _stop_requested(should_stop):
+        print("\n[*] Querying LibGen mirrors...")
+        libgen_results = scrapers.search_libgen(query)
+        print(f"[+] Found {len(libgen_results)} candidate results across LibGen mirrors. Analyzing top {max_results}...")
+        for res in libgen_results[:max_results]:
+            if _stop_requested(should_stop):
+                print("[!] Crawl halted by operator.")
+                return
+            url = res["url"]
+            print(f"    - Scraping and analyzing LibGen source: {url}...")
+            html = scrapers.fetch_url(url, retries=1, delay=0.2)
+            if not html:
+                print("      [!] Failed to fetch content.")
+                continue
+
+            cleaned = scrapers.clean_html(html)
+            print("      [*] Analyzing page with OpenRouter LLM...")
+            try:
+                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+            except ValueError as ve:
+                print(f"      [!] LLM skipped: {ve}")
+                parsed_data = None
+            else:
+                print("      [+] OpenRouter analysis returned.")
+
+            if parsed_data and parsed_data.get("title"):
+                title = parsed_data["title"]
+                author = parsed_data.get("author")
+                work_id = db.add_work(title=title, author=author, search_query=query)
+
+                parsed_uri = urllib.parse.urlparse(url)
+                site = parsed_uri.netloc or res.get("site") or "libgen"
+                files = parsed_data.get("files", [])
+                best = _add_best_file(
+                    work_id,
+                    files,
+                    url,
+                    site,
+                    res.get("source_name", "LibGen mirror"),
+                    trust_level="untrusted",
+                )
+                if best:
+                    print(f"      [+] Logged untrusted LibGen work: '{title}' with preferred [{best.get('format')}] version.")
                 else:
                     print(f"      [!] No downloadable version found for: '{title}'")
             else:

@@ -2,10 +2,12 @@ import asyncio
 import os
 import sqlite3
 from typing import Optional
+import urllib.parse
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+import archive_plugins
 import db
 
 
@@ -90,6 +92,49 @@ def _aggregate_category_rows(rows, count_key="texts"):
     )
 
 
+def _empty_site_row(site):
+    return {
+        "site": site,
+        "works": 0,
+        "files": 0,
+        "downloaded": 0,
+        "failed_downloads": 0,
+        "untrusted": 0,
+        "clean_scans": 0,
+        "infected_scans": 0,
+        "unavailable_scans": 0,
+        "processed": 0,
+        "bytes": 0,
+        "chars": 0,
+    }
+
+
+def _known_archive_sites():
+    sites = [
+        "archive.org",
+        "theanarchistlibrary.org",
+        "arxiv.org",
+        "substack.com",
+        "annas-archive.org",
+        "libgen.bz",
+    ]
+    for plugin in archive_plugins.load_plugins():
+        parsed = urllib.parse.urlparse(plugin.get("base_url") or "")
+        if parsed.netloc:
+            sites.append(parsed.netloc)
+    return sites
+
+
+def _merge_known_sites(rows):
+    by_site = {row["site"]: dict(row) for row in rows}
+    for site in _known_archive_sites():
+        by_site.setdefault(site, _empty_site_row(site))
+    return sorted(
+        by_site.values(),
+        key=lambda row: (-int(row.get("files") or 0), -int(row.get("works") or 0), row.get("site") or ""),
+    )
+
+
 def _limit_offset(limit, offset):
     return min(limit, MAX_LIMIT), max(offset, 0)
 
@@ -171,7 +216,7 @@ async def agent_status_socket(websocket: WebSocket):
 
 @app.get("/viz/breakdowns/sites")
 def site_breakdown():
-    return _rows("""
+    rows = _rows("""
         SELECT
             files.site,
             COUNT(DISTINCT works.id) AS works,
@@ -192,6 +237,7 @@ def site_breakdown():
         GROUP BY files.site
         ORDER BY files DESC, works DESC
     """)
+    return _merge_known_sites(rows)
 
 
 @app.get("/viz/breakdowns/formats")

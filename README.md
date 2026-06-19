@@ -38,6 +38,7 @@ Search archive sources and log discovered works/files:
 ```sh
 python cli.py search "max stirner" --max-results 3
 python cli.py search "mutual aid" --sources arxiv substack --max-results 5
+python cli.py search "religious texts" --sources annas_archive libgen --max-results 3
 python cli.py search "substack:https://example.substack.com" --sources substack --max-results 5
 ```
 
@@ -58,10 +59,12 @@ uses public Substack search results when available and can ingest a known
 publication feed when the query contains `substack:https://name.substack.com`;
 Substack rows are logged as HTML for the existing downloader/extractor.
 
-`slum_archives` covers the mirrors listed by `https://open-slum.org/`,
-including Anna's Archive mirrors, Libgen+ mirrors, Z-Library/info mirrors,
-Liber3, and Memory of the World. Each mirror is queried independently so an
-outage or unexpected page shape logs a warning and does not fail the whole run.
+`annas_archive` and `libgen` are default discovery sources in the agent harness
+and collector. `slum_archives` covers the broader mirror list published by
+`https://open-slum.org/`, including Anna's Archive mirrors, Libgen+ mirrors,
+Z-Library/info mirrors, Liber3, and Memory of the World. Each mirror is queried
+independently so an outage or unexpected page shape logs a warning and does not
+fail the whole run.
 
 Download pending file rows into the raw bucket:
 

@@ -79,7 +79,7 @@ Current command:
   --max-domains 4 \
   --per-domain-limit 3 \
   --rps 0.05 \
-  --sources archive_org anarchist_library arxiv substack
+  --sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins
 ```
 
 Important behavior:
@@ -88,7 +88,7 @@ Important behavior:
 - `--max-domains 4`: up to four domain workers in a download phase.
 - `--per-domain-limit 3`: at most three files per domain per cycle.
 - `--rps 0.05`: one request every 20 seconds per domain.
-- `--sources archive_org anarchist_library arxiv substack`: avoids Anna's Archive unless explicitly enabled.
+- `--sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins`: includes the high-yield book archives and configured plugin registry in the autonomous collector.
 - Use `--sources arxiv` for arXiv PDF discovery. Use `--sources substack`
   with a normal topic for public Substack search, or with
   `substack:https://name.substack.com` to ingest a publication RSS feed.
@@ -267,7 +267,7 @@ python cli.py --max-results 2 collect --once \
   --max-domains 4 \
   --per-domain-limit 3 \
   --rps 0.05 \
-  --sources archive_org anarchist_library arxiv substack
+  --sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins
 ```
 
 Open the terminal agent harness:
