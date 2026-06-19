@@ -112,9 +112,11 @@ def _is_bulk_torrent_url(url):
     text = str(url or "").lower()
     bulk_markers = (
         "/torrents/managed_by_aa/",
+        "/torrents/external/",
         "pilimi-",
         "zlib2-",
         "libgen-",
+        "libgen_rs_fic",
     )
     return any(marker in text for marker in bulk_markers)
 
