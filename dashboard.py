@@ -28,6 +28,7 @@ def _inline_status(parts):
 def render_dashboard(logo_lines):
     stats = db.get_stats()
     backlog = db.get_backlog_counts()
+    workers = db.get_agent_worker_counts()
     active_goal = goals.GoalStore().active()
 
     downloads = stats.get("downloads_by_status", {})
@@ -73,6 +74,12 @@ def render_dashboard(logo_lines):
             ("s3", raw_archives.get("archived", 0), "success"),
             ("clean", scans.get("clean", 0), "success"),
         ]),
+        _inline_status([
+            ("workers", workers["total"], "highlight"),
+            ("idle", workers["idle"], "success" if workers["running"] == 0 else "warning"),
+            ("run", workers["running"], "tool"),
+            ("bad", workers["failed"], _status_style(workers["failed"])),
+        ]),
         Group(Text.assemble(("goal ", "muted"), goal_value)),
     )
 
@@ -80,7 +87,7 @@ def render_dashboard(logo_lines):
     layout.add_column(justify="left", no_wrap=True)
     layout.add_column(justify="center", no_wrap=True)
     layout.add_column(ratio=1)
-    layout.add_row(Align.left(logo), Text(" │ \n │ \n │ \n │ \n │ ", style="pond"), status)
+    layout.add_row(Align.left(logo), Text(" │ \n │ \n │ \n │ \n │ \n │ ", style="pond"), status)
     return layout
 
 

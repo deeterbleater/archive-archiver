@@ -209,21 +209,62 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(latest["phase"], "error")
         self.assertIn("Tool search failed", latest["message"])
 
-    def test_search_tool_streams_and_captures_crawl_output(self):
-        visible_output = io.StringIO()
-        self.shell.stdout = visible_output
+    def test_search_tool_starts_one_background_batch_per_source(self):
+        completed = []
 
         def fake_crawl(query, model, max_results, sources, should_stop=None):
-            print(f"crawl started for {query}")
-            print(f"sources: {', '.join(sources)}")
+            completed.append((query, tuple(sources)))
 
         with mock.patch.object(self.shell.cli, "perform_crawl", side_effect=fake_crawl):
-            result = self.shell.tools.search("egoism", max_results=1, sources=["archive_org"])
+            result = self.shell.tools.search("egoism", max_results=1, sources=["archive_org", "arxiv"])
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                snapshots = self.shell.tools._batch_snapshot()
+                if len(snapshots) == 2 and all(batch["status"] == "complete" for batch in snapshots):
+                    break
+                time.sleep(0.01)
 
         self.assertTrue(result["ok"])
-        self.assertIn("crawl started for egoism", result["output"])
-        self.assertIn("crawl started for egoism", visible_output.getvalue())
-        self.assertIn("sources: archive_org", visible_output.getvalue())
+        self.assertTrue(result["async"])
+        self.assertEqual(len(result["batches"]), 2)
+        self.assertIn(("egoism", ("archive_org",)), completed)
+        self.assertIn(("egoism", ("arxiv",)), completed)
+        statuses = {batch["label"]: batch["status"] for batch in self.shell.tools._batch_snapshot()}
+        self.assertEqual(statuses["archive_org / egoism"], "complete")
+        self.assertEqual(statuses["arxiv / egoism"], "complete")
+        worker_counts = db.get_agent_worker_counts()
+        self.assertEqual(worker_counts["total"], 2)
+        self.assertEqual(worker_counts["idle"], 2)
+        self.assertEqual(worker_counts["running"], 0)
+
+        with mock.patch.object(self.shell.cli, "perform_crawl", side_effect=fake_crawl):
+            self.shell.tools.search("stirner", max_results=1, sources=["archive_org", "arxiv"])
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                counts = db.get_agent_worker_counts()
+                if counts["total"] == 2 and counts["idle"] == 2 and counts["running"] == 0:
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(db.get_agent_worker_counts()["total"], 2)
+
+    def test_background_batch_failure_is_recorded(self):
+        def fail_crawl(*_args, **_kwargs):
+            raise RuntimeError("archive offline")
+
+        with mock.patch.object(self.shell.cli, "perform_crawl", side_effect=fail_crawl):
+            result = self.shell.tools.search("egoism", max_results=1, sources=["archive_org"])
+            deadline = time.time() + 2
+            while self.shell.tools._batch_snapshot()[0]["status"] == "running" and time.time() < deadline:
+                time.sleep(0.01)
+
+        self.assertTrue(result["async"])
+        latest = self.shell.tools._batch_snapshot()[0]
+        self.assertEqual(latest["status"], "failed")
+        self.assertIn("archive offline", latest["error"])
+        worker_counts = db.get_agent_worker_counts()
+        self.assertEqual(worker_counts["failed"], 1)
+        self.assertEqual(worker_counts["idle"], 1)
 
     def test_cli_backed_tool_capture_streams_visible_output(self):
         visible_output = io.StringIO()

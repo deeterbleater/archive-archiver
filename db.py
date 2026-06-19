@@ -165,6 +165,19 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS agent_workers (
+        id TEXT PRIMARY KEY,
+        tool TEXT NOT NULL,
+        label TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        started_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        finished_at REAL
+    )
+    """)
+
     _ensure_column(cursor, "downloads", "final_url", "TEXT")
     _ensure_column(cursor, "downloads", "etag", "TEXT")
     _ensure_column(cursor, "downloads", "last_modified", "TEXT")
@@ -302,6 +315,51 @@ def get_recent_agent_statuses(limit=20):
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
+
+
+def upsert_agent_worker(worker_id, tool, label, status, error=None, started_at=None, finished_at=None):
+    now = __import__("time").time()
+    started_at = started_at or now
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO agent_workers (id, tool, label, status, error, started_at, updated_at, finished_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+        tool = excluded.tool,
+        label = excluded.label,
+        status = excluded.status,
+        error = excluded.error,
+        updated_at = excluded.updated_at,
+        finished_at = excluded.finished_at
+    """, (
+        worker_id,
+        str(tool),
+        str(label),
+        str(status),
+        error,
+        float(started_at),
+        now,
+        finished_at,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_agent_worker_counts():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        COUNT(*) AS total,
+        COUNT(CASE WHEN status = 'running' THEN 1 END) AS running,
+        COUNT(CASE WHEN status IN ('complete', 'failed') THEN 1 END) AS idle,
+        COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed
+    FROM agent_workers
+    """)
+    row = dict(cursor.fetchone())
+    conn.close()
+    return {key: int(row.get(key) or 0) for key in ("total", "running", "idle", "failed")}
 
 
 def ensure_category(name, description=None, keywords=None, dynamic=True):

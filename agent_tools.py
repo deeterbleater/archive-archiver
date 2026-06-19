@@ -6,6 +6,8 @@ import re
 import signal
 import sys
 import threading
+import time
+import uuid
 from types import SimpleNamespace
 import urllib.parse
 
@@ -94,7 +96,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search",
-            "description": "Discover archive records for a query and add matching works/files to the database.",
+            "description": "Start asynchronous archive discovery for a query. Launches one background batch per archive source and returns batch ids immediately; use status or backlog to inspect background_batches.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -294,6 +296,8 @@ TOOL_SCHEMAS = [
 class AppToolRunner:
     def __init__(self, shell):
         self.shell = shell
+        self._batch_lock = threading.Lock()
+        self._batches = {}
 
     def execute(self, name, arguments):
         handlers = {
@@ -319,14 +323,20 @@ class AppToolRunner:
                 result = handlers[name](**(arguments or {}))
             if hasattr(self.shell, "_log_agent_status"):
                 phase = "end" if result.get("ok", True) else "error"
-                detail = "finished" if result.get("ok", True) else result.get("error", "returned an error")
+                if result.get("async"):
+                    detail = f"started {len(result.get('batches') or [])} background batch(es)"
+                else:
+                    detail = "finished" if result.get("ok", True) else result.get("error", "returned an error")
                 self.shell._log_agent_status(
                     f"Tool {name} {detail}.",
                     loop_kind="tool",
                     phase=phase,
                 )
             status = "success" if result.get("ok", True) else "failed"
-            terminal_theme.print_pip(status, f"tool {name} {'complete' if result.get('ok', True) else 'failed'}")
+            if result.get("async"):
+                terminal_theme.print_pip(status, f"tool {name} queued {len(result.get('batches') or [])} background batch(es)")
+            else:
+                terminal_theme.print_pip(status, f"tool {name} {'complete' if result.get('ok', True) else 'failed'}")
             return result
         except ToolTimeoutError as exc:
             timeout_seconds = TOOL_TIMEOUTS.get(name)
@@ -366,12 +376,101 @@ class AppToolRunner:
     def _namespace(self, **values):
         return self.shell._namespace(**values)
 
+    def _log_tool_status(self, message, phase="update"):
+        if hasattr(self.shell, "_log_agent_status"):
+            self.shell._log_agent_status(message, loop_kind="tool", phase=phase)
+
+    def _batch_snapshot(self, limit=20):
+        with self._batch_lock:
+            rows = sorted(self._batches.values(), key=lambda row: row["started_at"], reverse=True)
+            return [dict(row) for row in rows[:limit]]
+
+    def _start_batch(self, tool, label, target, *args, worker_id=None, **kwargs):
+        batch_id = f"{tool}-{uuid.uuid4().hex[:8]}"
+        worker_id = worker_id or batch_id
+        batch = {
+            "id": batch_id,
+            "worker_id": worker_id,
+            "tool": tool,
+            "label": label,
+            "status": "running",
+            "started_at": time.time(),
+            "finished_at": None,
+            "error": None,
+        }
+        with self._batch_lock:
+            self._batches[batch_id] = batch
+        db.upsert_agent_worker(
+            worker_id,
+            tool=tool,
+            label=label,
+            status="running",
+            started_at=batch["started_at"],
+        )
+
+        def run():
+            terminal_theme.print_pip("pending", f"batch {batch_id} started: {label}")
+            self._log_tool_status(f"Batch {batch_id} started: {label}", phase="start")
+            try:
+                target(*args, **kwargs)
+            except Exception as exc:
+                error_text = f"{type(exc).__name__}: {exc}"
+                terminal_theme.print_pip("failed", f"batch {batch_id} failed: {label}: {error_text}")
+                self._log_tool_status(f"Batch {batch_id} failed: {label}: {error_text}", phase="error")
+                with self._batch_lock:
+                    self._batches[batch_id].update({
+                        "status": "failed",
+                        "finished_at": time.time(),
+                        "error": error_text,
+                    })
+                    updated = dict(self._batches[batch_id])
+                db.upsert_agent_worker(
+                    worker_id,
+                    tool=tool,
+                    label=label,
+                    status="failed",
+                    error=error_text,
+                    started_at=updated["started_at"],
+                    finished_at=updated["finished_at"],
+                )
+                return
+
+            terminal_theme.print_pip("success", f"batch {batch_id} complete: {label}")
+            self._log_tool_status(f"Batch {batch_id} complete: {label}", phase="end")
+            with self._batch_lock:
+                self._batches[batch_id].update({
+                    "status": "complete",
+                    "finished_at": time.time(),
+                })
+                updated = dict(self._batches[batch_id])
+            db.upsert_agent_worker(
+                worker_id,
+                tool=tool,
+                label=label,
+                status="complete",
+                started_at=updated["started_at"],
+                finished_at=updated["finished_at"],
+            )
+
+        thread = threading.Thread(target=run, name=batch_id, daemon=True)
+        thread.start()
+        return dict(batch)
+
     def status(self):
         stats = db.get_stats()
-        return {"ok": True, "stats": stats, "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
+        return {
+            "ok": True,
+            "stats": stats,
+            "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION),
+            "background_batches": self._batch_snapshot(),
+        }
 
     def backlog(self):
-        return {"ok": True, "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
+        return {
+            "ok": True,
+            "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION),
+            "background_batches": self._batch_snapshot(),
+        }
 
     def web_search(self, query, limit=5):
         if hasattr(self.shell, "_log_agent_status"):
@@ -485,6 +584,45 @@ class AppToolRunner:
             f"[tool]search[/tool] [muted]query[/muted] [highlight]{query}[/highlight] "
             f"[muted]sources[/muted] {', '.join(selected_sources)}"
         )
+
+        batches = []
+        for source in selected_sources:
+            batches.append(self._start_batch(
+                "search",
+                f"{source} / {query}",
+                self._search_source,
+                query,
+                max_results or self.shell.config["max_results"],
+                source,
+                worker_id=f"search:{source}",
+            ))
+        return {
+            "ok": True,
+            "async": True,
+            "message": "Archive search batches started in the background. Use status or backlog to check background_batches.",
+            "batches": batches,
+            "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION),
+        }
+
+    def _search_source(self, query, max_results, source):
+        if hasattr(self.shell, "_touch_agent_activity"):
+            self.shell._touch_agent_activity(f"background search {source}")
+        terminal_theme.print_markup(
+            f"[tool]search[/tool] [muted]source[/muted] [highlight]{source}[/highlight] "
+            f"[muted]query[/muted] {query}"
+        )
+        self.shell.cli.perform_crawl(
+            query,
+            self.shell.config["model"],
+            max_results,
+            sources=[source],
+            should_stop=getattr(self.shell, "_goal_should_stop", None),
+        )
+        if hasattr(self.shell, "_touch_agent_activity"):
+            self.shell._touch_agent_activity(f"background search {source} complete")
+
+    def search_sync(self, query, max_results=None, sources=None):
+        selected_sources = sources or self.shell.config["sources"]
         output = TeeCapture(self._tool_output_target())
         with contextlib.redirect_stdout(output):
             self.shell.cli.perform_crawl(
