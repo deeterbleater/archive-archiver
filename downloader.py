@@ -24,7 +24,8 @@ DEFAULT_RAW_BUCKET_DIR = os.getenv("ARCHIVE_RAW_BUCKET_DIR", "bucket/raw")
 DEFAULT_QUARANTINE_BUCKET_DIR = os.getenv("ARCHIVE_QUARANTINE_BUCKET_DIR", "bucket/quarantine")
 DEFAULT_TOR_PROXY = os.getenv("ALGE_TOR_PROXY") or os.getenv("ARCHIVE_TOR_PROXY")
 DEFAULT_TORRENT_CLIENT = os.getenv("ALGE_TORRENT_CLIENT") or os.getenv("ARCHIVE_TORRENT_CLIENT")
-DEFAULT_TORRENT_TIMEOUT_SECONDS = int(os.getenv("ALGE_TORRENT_TIMEOUT", "1800"))
+DEFAULT_TORRENT_TIMEOUT_SECONDS = int(os.getenv("ALGE_TORRENT_TIMEOUT", "300"))
+DEFAULT_TORRENT_STALL_SECONDS = int(os.getenv("ALGE_TORRENT_STALL_TIMEOUT", "60"))
 TORRENT_PAYLOAD_EXTENSIONS = {
     ".txt",
     ".text",
@@ -224,6 +225,8 @@ def _torrent_command(client, url, staging_dir):
             "--seed-time=0",
             "--summary-interval=0",
             "--console-log-level=warn",
+            "--bt-stop-timeout", str(DEFAULT_TORRENT_STALL_SECONDS),
+            "--lowest-speed-limit", "1K",
             "--allow-overwrite=true",
             "--auto-file-renaming=false",
             url,

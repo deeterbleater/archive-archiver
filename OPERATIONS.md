@@ -473,7 +473,8 @@ Torrent fallback:
 - Supported clients are `aria2c` and `transmission-cli`; set
   `ALGE_TORRENT_CLIENT` to force one, or leave unset for auto-detection.
 - `ALGE_TORRENT_TIMEOUT` controls the maximum runtime per torrent download and
-  defaults to `1800` seconds.
+  defaults to `300` seconds. `ALGE_TORRENT_STALL_TIMEOUT` controls aria2's
+  no-peer/no-progress stop timer and defaults to `60` seconds.
 - Completed torrent payloads are staged under quarantine, filtered to
   plaintext-extractable formats, virus-scanned, and only then promoted into the
   raw bucket.

@@ -512,6 +512,8 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(metadata["content_type"], "text/plain")
         self.assertEqual(metadata["http_status"], 200)
         self.assertIn("--follow-torrent=mem", run.call_args.args[0])
+        self.assertIn("--bt-stop-timeout", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["timeout"], downloader.DEFAULT_TORRENT_TIMEOUT_SECONDS)
 
     def test_torrent_download_requires_client(self):
         row = {
