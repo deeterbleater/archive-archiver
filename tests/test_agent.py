@@ -88,6 +88,20 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(self.shell.config["model"], "minimax/minimax-m3")
         self.assertIn("model updated", output)
 
+    def test_validate_texts_slash_command_dispatches_to_cli(self):
+        captured = {}
+
+        def fake_validate(args):
+            captured.update(vars(args))
+
+        with mock.patch.object(self.shell.cli, "handle_validate_texts", side_effect=fake_validate):
+            result, _output = self._run("/validate-texts --limit 7 --workers 2 --no-llm")
+
+        self.assertIsNone(result)
+        self.assertEqual(captured["limit"], 7)
+        self.assertEqual(captured["workers"], 2)
+        self.assertTrue(captured["no_llm"])
+
     def test_exit_kills_managed_tmux_session(self):
         with mock.patch.dict(os.environ, {"ALGE_TMUX_MANAGED": "1", "ALGE_TMUX_SESSION": "alge-test", "TMUX": "/tmp/tmux"}):
             with mock.patch("agent.subprocess.Popen") as popen:

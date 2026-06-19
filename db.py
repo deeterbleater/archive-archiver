@@ -629,7 +629,7 @@ def add_work(title, author=None, search_query=None):
 
 
 def work_has_archive_activity(work_id):
-    """Returns true once a work has any download or plaintext extraction state."""
+    """Returns true once a work has usable or in-flight archive state."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -639,8 +639,17 @@ def work_has_archive_activity(work_id):
     LEFT JOIN extractions ON extractions.download_id = downloads.id
     WHERE files.work_id = ?
       AND (
-          downloads.id IS NOT NULL
-          OR extractions.id IS NOT NULL
+          downloads.status IN ('pending', 'downloading')
+          OR (
+              downloads.status = 'downloaded'
+              AND (
+                  extractions.id IS NULL
+                  OR (
+                      extractions.status IN ('pending', 'processing', 'processed')
+                      AND COALESCE(extractions.quality_status, 'usable') != 'unusable'
+                  )
+              )
+          )
       )
     LIMIT 1
     """, (work_id,))
@@ -739,7 +748,22 @@ def get_backlog_counts(extractor="plaintext.v2"):
             FROM files sibling_files
             JOIN downloads sibling_downloads
               ON sibling_downloads.file_id = sibling_files.id
+            LEFT JOIN extractions sibling_extractions
+              ON sibling_extractions.download_id = sibling_downloads.id
             WHERE sibling_files.work_id = files.work_id
+              AND (
+                  sibling_downloads.status IN ('pending', 'downloading')
+                  OR (
+                      sibling_downloads.status = 'downloaded'
+                      AND (
+                          sibling_extractions.id IS NULL
+                          OR (
+                              sibling_extractions.status IN ('pending', 'processing', 'processed')
+                              AND COALESCE(sibling_extractions.quality_status, 'usable') != 'unusable'
+                          )
+                      )
+                  )
+              )
         )
     """)
     pending_downloads = cursor.fetchone()[0]
@@ -803,7 +827,22 @@ def get_pending_download_files(limit=10):
             FROM files sibling_files
             JOIN downloads sibling_downloads
               ON sibling_downloads.file_id = sibling_files.id
+            LEFT JOIN extractions sibling_extractions
+              ON sibling_extractions.download_id = sibling_downloads.id
             WHERE sibling_files.work_id = files.work_id
+              AND (
+                  sibling_downloads.status IN ('pending', 'downloading')
+                  OR (
+                      sibling_downloads.status = 'downloaded'
+                      AND (
+                          sibling_extractions.id IS NULL
+                          OR (
+                              sibling_extractions.status IN ('pending', 'processing', 'processed')
+                              AND COALESCE(sibling_extractions.quality_status, 'usable') != 'unusable'
+                          )
+                      )
+                  )
+              )
         )
     ORDER BY files.work_id ASC, files.id ASC
     """)

@@ -253,19 +253,15 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 print("      [!] Failed to fetch content.")
                 continue
 
-            parsed_data = scrapers.parse_annas_detail_page(html, url)
-            if parsed_data:
-                print("      [+] Parsed Anna's Archive download links deterministically.")
+            cleaned = scrapers.clean_html(html)
+            print("      [*] Analyzing page with OpenRouter LLM...")
+            try:
+                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+            except ValueError as ve:
+                print(f"      [!] LLM skipped: {ve}")
+                parsed_data = None
             else:
-                cleaned = scrapers.clean_html(html)
-                print("      [*] Analyzing page with OpenRouter LLM...")
-                try:
-                    parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-                except ValueError as ve:
-                    print(f"      [!] LLM skipped: {ve}")
-                    parsed_data = None
-                else:
-                    print("      [+] OpenRouter analysis returned.")
+                print("      [+] OpenRouter analysis returned.")
             
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -302,16 +298,20 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
             if not html:
                 print("      [!] Failed to fetch content.")
                 continue
-                
-            cleaned = scrapers.clean_html(html)
-            print("      [*] Analyzing page with OpenRouter LLM...")
-            try:
-                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-            except ValueError as ve:
-                print(f"      [!] LLM skipped: {ve}")
-                parsed_data = None
+
+            parsed_data = scrapers.parse_annas_detail_page(html, url)
+            if parsed_data:
+                print("      [+] Parsed Anna's Archive download links deterministically.")
             else:
-                print("      [+] OpenRouter analysis returned.")
+                cleaned = scrapers.clean_html(html)
+                print("      [*] Analyzing page with OpenRouter LLM...")
+                try:
+                    parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+                except ValueError as ve:
+                    print(f"      [!] LLM skipped: {ve}")
+                    parsed_data = None
+                else:
+                    print("      [+] OpenRouter analysis returned.")
             
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]

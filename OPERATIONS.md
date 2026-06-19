@@ -275,6 +275,25 @@ python cli.py --max-results 2 collect --once \
   --sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins
 ```
 
+Rerun Anna's Archive rows that were previously archived as HTML detail/gate
+pages:
+
+```sh
+scripts/rerun_annas_affected.py --dry-run --limit 5
+scripts/rerun_annas_affected.py \
+  --batch-size 5 \
+  --sources annas_archive libgen archive_org \
+  --max-results 5 \
+  --download-limit 25 \
+  --process-limit 25 \
+  --validate
+```
+
+The script reads affected work IDs from the live SQLite database, writes
+targeted query batches, and drives the normal ALGE harness with
+`bin/alge --no-tmux -c "/cycle ..."`. It skips works that already have usable
+processed text unless `--include-resolved` is passed.
+
 Open the terminal agent harness:
 
 ```sh

@@ -115,6 +115,34 @@ class PipelineStateTests(unittest.TestCase):
 
         self.assertEqual(db.get_processed_extractions(limit=10), [])
 
+    def test_unusable_or_skipped_attempt_does_not_block_replacement_candidate(self):
+        self._add_processed_text("Stubbed Work", "Readable fixture used for db state.")
+        extraction = db.get_processed_extractions(limit=1)[0]
+
+        db.mark_text_quality(
+            extraction["extraction_id"],
+            "unusable",
+            score=0.0,
+            reason="stub",
+            model="fixture",
+        )
+        db.reject_text_extraction(extraction["extraction_id"], reason="stub")
+
+        self.assertFalse(db.work_has_archive_activity(extraction["work_id"]))
+
+        db.add_file(
+            work_id=extraction["work_id"],
+            site="annas-archive.org",
+            format="EPUB",
+            url="https://annas-archive.gl/md5/replacement",
+            download_url="https://annas-archive.gl/fast_download/abc123abc123abc123abc123abc123ab/0/0",
+            trust_level="untrusted",
+        )
+        pending = db.get_pending_download_files(limit=10)
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["format"], "EPUB")
+
     def test_remove_unusable_marks_extraction_skipped_and_deletes_text(self):
         self._add_processed_text("Delete Bad Bytes", "Readable fixture used for cleanup.")
         extraction = db.get_processed_extractions(limit=1)[0]
