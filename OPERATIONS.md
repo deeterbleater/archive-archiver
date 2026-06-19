@@ -16,7 +16,7 @@ The `.env` file contains the OpenRouter API key and must stay uncommitted. The
 current LLM parsing model is configured as:
 
 ```sh
-OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
+OPENROUTER_MODEL=minimax/minimax-m3
 ```
 
 ## Data Flow
@@ -301,7 +301,7 @@ what should I collect next for an egoist corpus?
 /status
 /config
 /model
-/model qwen/qwen3.7-plus
+/model minimax/minimax-m3
 /set max-results 2
 /set sources archive_org anarchist_library arxiv substack
 /search "public domain political economy"
@@ -361,7 +361,7 @@ Useful memory commands:
 
 ```text
 /model
-/model qwen/qwen3.7-plus
+/model minimax/minimax-m3
 /remember TEXT
 /memory --search TEXT
 /context
@@ -480,5 +480,5 @@ As of the last setup pass:
 - `archive-collector.service`: active
 - `archive-api.service`: active
 - API: `http://127.0.0.1:8090`
-- OpenRouter model: `nvidia/nemotron-3-ultra-550b-a55b:free`
+- OpenRouter model: `minimax/minimax-m3`
 - Public sources enabled by default: `archive_org`, `anarchist_library`, `arxiv`, `substack`

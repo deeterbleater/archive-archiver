@@ -178,7 +178,7 @@ Common slash commands include:
 /status
 /config
 /model
-/model qwen/qwen3.7-plus
+/model minimax/minimax-m3
 /set sources archive_org anarchist_library arxiv substack
 /search "max stirner" --max-results 3
 /download --limit 10 --domain-workers
@@ -211,7 +211,7 @@ The `alge` harness saves command context and operator notes to
 
 ```text
 /model
-/model qwen/qwen3.7-plus
+/model minimax/minimax-m3
 /remember TEXT
 /memory --limit 20
 /memory --search TEXT
@@ -227,7 +227,7 @@ local estimate is large enough to need compaction, and falls back to a 32k-token
 window if metadata is unavailable. You can tune this per session:
 
 ```text
-/set model qwen/qwen3.7-plus
+/set model minimax/minimax-m3
 /set compaction-ratio 0.55
 /set memory-path logs/agent_memory.jsonl
 ```

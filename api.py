@@ -50,6 +50,46 @@ def _one(sql, params=()):
     return dict(row) if row else None
 
 
+def _clean_category_row(row, count_key="texts"):
+    item = dict(row)
+    dynamic = bool(item.get("dynamic"))
+    category = item.get("category") or "unprocessed"
+    if dynamic and not db.is_valid_dynamic_category_name(category):
+        item["category"] = "uncategorized"
+        item["description"] = "Fallback for extracted text without a reliable category signal."
+        item["keywords_json"] = "[]"
+        item["dynamic"] = 1
+    item.setdefault(count_key, 0)
+    item.setdefault("chars", 0)
+    return item
+
+
+def _aggregate_category_rows(rows, count_key="texts"):
+    merged = {}
+    for row in rows:
+        item = _clean_category_row(row, count_key=count_key)
+        category = item["category"]
+        existing = merged.setdefault(category, {
+            "category": category,
+            "description": item.get("description"),
+            "dynamic": item.get("dynamic") or 0,
+            "keywords_json": item.get("keywords_json"),
+            count_key: 0,
+            "chars": 0,
+        })
+        existing[count_key] += int(item.get(count_key) or 0)
+        existing["chars"] += int(item.get("chars") or 0)
+        if not existing.get("description") and item.get("description"):
+            existing["description"] = item.get("description")
+        if (not existing.get("keywords_json") or existing.get("keywords_json") == "[]") and item.get("keywords_json"):
+            existing["keywords_json"] = item.get("keywords_json")
+        existing["dynamic"] = 1 if existing.get("dynamic") or item.get("dynamic") else 0
+    return sorted(
+        merged.values(),
+        key=lambda item: (-int(item.get(count_key) or 0), -int(item.get("chars") or 0), item["category"]),
+    )
+
+
 def _limit_offset(limit, offset):
     return min(limit, MAX_LIMIT), max(offset, 0)
 
@@ -174,7 +214,7 @@ def format_breakdown():
 
 @app.get("/viz/breakdowns/categories")
 def category_breakdown():
-    return _rows("""
+    rows = _rows("""
         SELECT
             COALESCE(categories.name, extractions.category, 'unprocessed') AS category,
             categories.description,
@@ -189,6 +229,7 @@ def category_breakdown():
         GROUP BY COALESCE(categories.name, extractions.category, 'unprocessed')
         ORDER BY texts DESC, chars DESC
     """)
+    return _aggregate_category_rows(rows, count_key="texts")
 
 
 @app.get("/viz/breakdowns/trust")
@@ -518,7 +559,7 @@ def dimensions():
         "trust_levels": _rows("SELECT trust_level, COUNT(*) AS count FROM files GROUP BY trust_level ORDER BY count DESC"),
         "scan_statuses": _rows("SELECT COALESCE(scan_status, 'unscanned') AS status, COUNT(*) AS count FROM downloads GROUP BY COALESCE(scan_status, 'unscanned') ORDER BY count DESC"),
         "raw_archive_statuses": _rows("SELECT COALESCE(raw_archive_status, 'local') AS status, COUNT(*) AS count FROM downloads GROUP BY COALESCE(raw_archive_status, 'local') ORDER BY count DESC"),
-        "categories": _rows("""
+        "categories": _aggregate_category_rows(_rows("""
             SELECT
                 categories.name AS category,
                 categories.description,
@@ -530,7 +571,7 @@ def dimensions():
             LEFT JOIN extractions ON extractions.category = categories.name
             GROUP BY categories.name
             ORDER BY count DESC, categories.name ASC
-        """),
+        """), count_key="count"),
         "search_queries": _rows("""
             SELECT search_query, COUNT(*) AS count
             FROM works

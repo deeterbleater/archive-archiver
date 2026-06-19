@@ -173,36 +173,37 @@ class ArchiveAgentShell(cmd.Cmd):
         self._agent_last_activity = time.monotonic()
         self._agent_current_operation = operation
 
-    def _chat_messages(self, user_text):
+    def _chat_messages(self, user_text, include_memory=True):
         context_length = self.memory.model_context_length(model=self._active_model())
         budget = max(2000, int(context_length * 0.65))
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         used = memory.estimate_tokens(SYSTEM_PROMPT) + memory.estimate_tokens(user_text)
 
-        rows = [
-            row for row in self.memory.entries()
-            if row.get("kind") in CHAT_KINDS
-        ]
-        selected = []
-        for row in reversed(rows):
-            content = row.get("content", "")
-            tokens = memory.estimate_tokens(content)
-            if used + tokens > budget:
-                break
-            selected.append(row)
-            used += tokens
+        if include_memory:
+            rows = [
+                row for row in self.memory.entries()
+                if row.get("kind") in CHAT_KINDS
+            ]
+            selected = []
+            for row in reversed(rows):
+                content = row.get("content", "")
+                tokens = memory.estimate_tokens(content)
+                if used + tokens > budget:
+                    break
+                selected.append(row)
+                used += tokens
 
-        for row in reversed(selected):
-            kind = row.get("kind")
-            content = row.get("content", "")
-            if kind == "assistant":
-                messages.append({"role": "assistant", "content": content})
-            elif kind == "user":
-                messages.append({"role": "user", "content": content})
-            elif kind == "summary":
-                messages.append({"role": "system", "content": f"Prior context summary:\n{content}"})
-            elif kind == "note":
-                messages.append({"role": "system", "content": f"Operator note:\n{content}"})
+            for row in reversed(selected):
+                kind = row.get("kind")
+                content = row.get("content", "")
+                if kind == "assistant":
+                    messages.append({"role": "assistant", "content": content})
+                elif kind == "user":
+                    messages.append({"role": "user", "content": content})
+                elif kind == "summary":
+                    messages.append({"role": "system", "content": f"Prior context summary:\n{content}"})
+                elif kind == "note":
+                    messages.append({"role": "system", "content": f"Operator note:\n{content}"})
 
         messages.append({"role": "user", "content": user_text})
         return messages
@@ -647,9 +648,10 @@ Estimated completion: {goal.get('estimated_completion_at') or 'not set'}
 Recent goal events:
 {event_text or '- none'}
 
+This goal context is isolated. Work only on this Goal ID and objective; ignore prior goal objectives unless this objective explicitly references them.
 Continue this goal. Use web_search for outside knowledge and discovery leads, use archive search tools to add works, then use download/process/archive_raw or run_backlog_until_done to push found files through the archival workflow. Set or update the goal timer when you can estimate remaining work. Keep going unless the goal is complete or blocked.
 """.strip()
-        return self._chat_messages(content)
+        return self._chat_messages(content, include_memory=False)
 
     def _print_goal(self, goal):
         lines = [
@@ -758,7 +760,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                     goal = self.goal_store.update(goal["id"], status="stopped")
                     self.goal_store.append_event(goal["id"], "stopped", "halted by q key")
                     break
-                if goal.get("status") in ("complete", "blocked", "stopped"):
+                if goal.get("status") in ("complete", "blocked", "stopped", "superseded"):
                     break
                 cycle = int(goal.get("cycles", 0)) + 1
                 self.goal_store.append_event(goal["id"], "cycle", f"starting goal cycle {cycle}")
@@ -780,7 +782,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                     self.goal_store.append_event(goal["id"], "stopped", "halted by q key")
                     self.current_goal = goal
                     break
-                if goal.get("status") in ("complete", "blocked", "stopped"):
+                if goal.get("status") in ("complete", "blocked", "stopped", "superseded"):
                     break
                 if sleep_seconds:
                     terminal_theme.print_markup(f"[muted]goal sleeping {sleep_seconds}s before next cycle[/muted]")
@@ -845,8 +847,14 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             if not goal:
                 print(f"[!] Unknown goal: {args.resume}")
                 return
-            if goal.get("status") in ("complete", "blocked", "stopped"):
+            if goal.get("status") in ("complete", "blocked", "stopped", "superseded"):
                 goal = self.goal_store.update(goal["id"], status="active")
+            superseded = self.goal_store.supersede_active(
+                replacement_id=goal["id"],
+                reason=f"superseded by resumed goal: {goal['id']}",
+            )
+            if superseded:
+                terminal_theme.print_markup(f"[muted]superseded {len(superseded)} active goal(s)[/muted]")
         else:
             objective = " ".join(args.objective).strip()
             if not objective:
@@ -856,6 +864,9 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                 else:
                     print("[!] Usage: /goal [--run] OBJECTIVE")
                 return
+            superseded = self.goal_store.supersede_active(reason=f"superseded by new goal: {objective}")
+            if superseded:
+                terminal_theme.print_markup(f"[muted]superseded {len(superseded)} active goal(s)[/muted]")
             goal = self.goal_store.create(objective, metadata={"model": self._active_model()})
             self.goal_store.append_event(goal["id"], "created", objective)
 

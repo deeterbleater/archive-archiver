@@ -138,6 +138,23 @@ class PipelineStateTests(unittest.TestCase):
         self.assertTrue(categories["thelema"]["dynamic"])
         self.assertIn("ritual", categories["thelema"]["keywords"])
 
+    def test_dynamic_category_rejects_pdf_artifacts_and_ocr_fragments(self):
+        row = {
+            "title": "",
+            "author": "Test Author",
+            "site": "fixture.example",
+            "search_query": "",
+        }
+        text = "endobj stream flatedecode a9dj a9dj a9dj aewn aewn aewn b12c b12c"
+
+        category = processor.categorize_text(row, text)
+
+        self.assertEqual(category, "uncategorized")
+        self.assertFalse(db.is_valid_dynamic_category_name("endobj"))
+        self.assertFalse(db.is_valid_dynamic_category_name("a9dj"))
+        self.assertFalse(db.is_valid_dynamic_category_name("abusch"))
+        self.assertTrue(db.is_valid_dynamic_category_name("thelema"))
+
     def test_default_categories_are_seeded(self):
         categories = {item["name"] for item in db.get_categories()}
 

@@ -72,6 +72,31 @@ class GoalStore:
         active = [goal for goal in self.list() if goal.get("status") in ("active", "running")]
         return active[-1] if active else None
 
+    def active_goals(self):
+        return [goal for goal in self.list() if goal.get("status") in ("active", "running")]
+
+    def supersede_active(self, replacement_id=None, reason="superseded by another goal"):
+        data = self._load()
+        changed = []
+        timestamp = now()
+        for goal in data["goals"]:
+            if goal.get("status") not in ("active", "running"):
+                continue
+            if replacement_id and goal.get("id") == replacement_id:
+                continue
+            goal["status"] = "superseded"
+            goal["updated_at"] = timestamp
+            goal.setdefault("events", []).append({
+                "ts": timestamp,
+                "kind": "superseded",
+                "content": reason,
+                "metadata": {"replacement_id": replacement_id},
+            })
+            changed.append(goal)
+        if changed:
+            self._save(data)
+        return changed
+
     def create(self, objective, metadata=None):
         data = self._load()
         goal = {

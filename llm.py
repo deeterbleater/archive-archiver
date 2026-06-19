@@ -9,8 +9,8 @@ import terminal_theme
 # Load environment variables
 load_dotenv()
 
-# Default free models on OpenRouter
-DEFAULT_MODEL = "qwen/qwen3.7-plus"
+# Default chat and agent model on OpenRouter.
+DEFAULT_MODEL = "minimax/minimax-m3"
 DEFAULT_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "60"))
 ANALYSIS_BUBBLE_RESPONSE_CHARS = int(os.getenv("ALGE_ANALYSIS_BUBBLE_RESPONSE_CHARS", "1600"))
 

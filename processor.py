@@ -24,7 +24,8 @@ STOPWORDS = {
     "but", "you", "was", "his", "her", "its", "has", "had", "who", "one",
     "all", "can", "our", "out", "may", "will", "been", "them", "then",
     "some", "only", "many", "much", "very", "chapter", "page", "book",
-    "archive", "library", "text", "work", "author",
+    "archive", "archives", "author", "book", "books", "file", "files",
+    "library", "page", "pages", "text", "texts", "work", "works",
 }
 
 
@@ -131,19 +132,46 @@ def categorize_text(row, text):
     return create_dynamic_category(row, text)
 
 
-def create_dynamic_category(row, text):
-    source = " ".join([
-        str(row.get("title") or ""),
-        text[:20000],
-    ]).lower()
+def _category_token(value):
+    token = re.sub(r"[^a-z]+", "", str(value or "").lower())
+    if len(token) < 4 or token in STOPWORDS:
+        return None
+    if not db.is_valid_dynamic_category_name(token):
+        return None
+    return token
+
+
+def _token_counts(source):
     counts = {}
-    for token in re.findall(r"[a-z][a-z0-9_'-]{3,}", source):
-        token = token.strip("'_-")
-        if len(token) < 4 or token in STOPWORDS or token.isdigit():
+    for raw_token in re.findall(r"[a-z][a-z0-9_'-]{3,}", str(source or "").lower()):
+        token = _category_token(raw_token)
+        if not token:
             continue
         counts[token] = counts.get(token, 0) + 1
+    return counts
 
-    if not counts:
+
+def create_dynamic_category(row, text):
+    title_source = " ".join([
+        str(row.get("title") or ""),
+        str(row.get("search_query") or ""),
+    ])
+    title_counts = _token_counts(title_source)
+    text_counts = _token_counts(text[:20000])
+
+    if title_counts:
+        ranked_names = sorted(
+            title_counts.items(),
+            key=lambda item: (-(item[1] * 3 + text_counts.get(item[0], 0)), item[0]),
+        )
+    else:
+        repeated_text_counts = {
+            token: count for token, count in text_counts.items()
+            if count >= 3
+        }
+        ranked_names = sorted(repeated_text_counts.items(), key=lambda item: (-item[1], item[0]))
+
+    if not ranked_names:
         return db.ensure_category(
             "uncategorized",
             description="Auto-created fallback for works without enough category signals.",
@@ -151,10 +179,13 @@ def create_dynamic_category(row, text):
             dynamic=True,
         )
 
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    keywords = [token for token, _count in ranked[:8]]
+    keyword_counts = dict(text_counts)
+    for token, count in title_counts.items():
+        keyword_counts[token] = keyword_counts.get(token, 0) + count + 2
+    ranked_keywords = sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))
+    keywords = [token for token, _count in ranked_keywords[:8]]
     return db.ensure_category(
-        keywords[0],
+        ranked_names[0][0],
         description="Auto-created during extraction because no existing category matched.",
         keywords=keywords,
         dynamic=True,

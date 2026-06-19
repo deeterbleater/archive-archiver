@@ -81,6 +81,49 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(trust[0]["trust_level"], "trusted")
         self.assertEqual(raw_archives[0]["status"], "local")
 
+    def test_category_breakdown_rolls_invalid_dynamic_names_into_uncategorized(self):
+        work_id = db.add_work("Junk Category Fixture", "Test Author", "test query")
+        db.add_file(
+            work_id=work_id,
+            site="example.org",
+            format="Text",
+            url="https://example.org/junk",
+            file_size="12 bytes",
+            download_source="fixture",
+            download_url="https://example.org/junk.txt",
+        )
+        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        db.mark_download_started(file_id)
+        db.mark_download_succeeded(
+            file_id=file_id,
+            bucket_uri="file:///tmp/junk.txt",
+            storage_key="junk.txt",
+            sha256="raw-sha",
+            byte_count=12,
+            content_type="text/plain",
+            http_status=200,
+            final_url="https://example.org/junk.txt",
+        )
+        db.ensure_category("a9dj", keywords=["a9dj", "b12c"], dynamic=True)
+        download_id = db.get_pending_extractions(limit=1, extractor="plaintext.v2")[0]["id"]
+        db.mark_extraction_started(download_id, "plaintext.v2")
+        db.mark_extraction_succeeded(
+            download_id=download_id,
+            extractor="plaintext.v2",
+            text_uri="file:///tmp/junk-text.txt",
+            text_sha256="text-sha",
+            char_count=123,
+            category="a9dj",
+        )
+
+        categories = self.api.category_breakdown()
+        dimensions = self.api.dimensions()
+
+        self.assertFalse(any(item["category"] == "a9dj" for item in categories))
+        self.assertFalse(any(item["category"] == "a9dj" for item in dimensions["categories"]))
+        uncategorized = next(item for item in categories if item["category"] == "uncategorized")
+        self.assertEqual(uncategorized["chars"], 123)
+
     def test_summary_separates_pending_and_failed_downloads(self):
         pending_work_id = db.add_work("Pending State", "Test Author", "states")
         db.add_file(
@@ -138,11 +181,11 @@ class ApiTests(unittest.TestCase):
 
     def test_agent_status_endpoints_return_latest_and_recent_rows(self):
         first = db.add_agent_status(
-            "Starting goal loop 1 with qwen/qwen3.7-plus.",
+            "Starting goal loop 1 with minimax/minimax-m3.",
             session_id="test-session",
             loop_kind="goal",
             phase="start",
-            model="qwen/qwen3.7-plus",
+            model="minimax/minimax-m3",
             goal_id="goal-1",
         )
         second = db.add_agent_status(
@@ -150,7 +193,7 @@ class ApiTests(unittest.TestCase):
             session_id="test-session",
             loop_kind="goal",
             phase="end",
-            model="qwen/qwen3.7-plus",
+            model="minimax/minimax-m3",
             goal_id="goal-1",
         )
 

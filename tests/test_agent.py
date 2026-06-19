@@ -82,10 +82,10 @@ class AgentHarnessTests(unittest.TestCase):
         )
 
     def test_model_command_sets_exact_model(self):
-        result, output = self._run("/model qwen/qwen3.7-plus")
+        result, output = self._run("/model minimax/minimax-m3")
 
         self.assertIsNone(result)
-        self.assertEqual(self.shell.config["model"], "qwen/qwen3.7-plus")
+        self.assertEqual(self.shell.config["model"], "minimax/minimax-m3")
         self.assertIn("model updated", output)
 
     def test_exit_kills_managed_tmux_session(self):
@@ -124,6 +124,44 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(stored[0]["status"], "active")
         self.assertEqual(stored[0]["objective"], "Find everything about Thelema")
 
+    def test_goal_command_supersedes_previous_active_goal(self):
+        self._run("/goal First objective")
+        result, output = self._run("/goal Second objective")
+
+        stored = self.shell.goal_store.list()
+        active = self.shell.goal_store.active()
+        self.assertIsNone(result)
+        self.assertIn("superseded 1 active goal", output)
+        self.assertEqual(stored[0]["status"], "superseded")
+        self.assertEqual(stored[1]["status"], "active")
+        self.assertEqual(active["objective"], "Second objective")
+
+    def test_goal_messages_do_not_include_chat_memory(self):
+        self.shell.memory.append("user", "OLD GOAL: archive Thelema", {})
+        self.shell.memory.append("assistant", "still working on the old objective", {})
+        goal = self.shell.goal_store.create("New objective only")
+
+        messages = self.shell._goal_messages(goal, cycle=1)
+        joined = "\n".join(message["content"] for message in messages)
+
+        self.assertIn("New objective only", joined)
+        self.assertIn("goal context is isolated", joined)
+        self.assertNotIn("OLD GOAL", joined)
+        self.assertNotIn("old objective", joined)
+
+    def test_goal_resume_supersedes_other_active_goals(self):
+        first = self.shell.goal_store.create("First objective")
+        second = self.shell.goal_store.create("Second objective")
+
+        result, output = self._run(f"/goal --resume {first['id']}")
+
+        first_updated = self.shell.goal_store.get(first["id"])
+        second_updated = self.shell.goal_store.get(second["id"])
+        self.assertIsNone(result)
+        self.assertIn("superseded 1 active goal", output)
+        self.assertEqual(first_updated["status"], "active")
+        self.assertEqual(second_updated["status"], "superseded")
+
     def test_goal_timer_tool_updates_active_goal(self):
         goal = self.shell.goal_store.create("Archive Thelema materials")
         self.shell.current_goal = goal
@@ -150,6 +188,14 @@ class AgentHarnessTests(unittest.TestCase):
         plugins = archive_plugins.load_plugins()
         self.assertEqual(len(plugins), 1)
         self.assertEqual(plugins[0]["base_url"], "https://fixture.example")
+
+    def test_agent_initializes_idle_worker_slots_for_configured_sources(self):
+        counts = db.get_agent_worker_counts()
+
+        self.assertEqual(counts["total"], len(self.shell.config["sources"]))
+        self.assertEqual(counts["idle"], len(self.shell.config["sources"]))
+        self.assertEqual(counts["running"], 0)
+        self.assertEqual(counts["failed"], 0)
 
     def test_goal_tool_loop_honors_stop_checker_before_model_call(self):
         original_chat_completion = llm.chat_completion
@@ -233,8 +279,8 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(statuses["archive_org / egoism"], "complete")
         self.assertEqual(statuses["arxiv / egoism"], "complete")
         worker_counts = db.get_agent_worker_counts()
-        self.assertEqual(worker_counts["total"], 2)
-        self.assertEqual(worker_counts["idle"], 2)
+        self.assertEqual(worker_counts["total"], len(self.shell.config["sources"]))
+        self.assertEqual(worker_counts["idle"], len(self.shell.config["sources"]))
         self.assertEqual(worker_counts["running"], 0)
 
         with mock.patch.object(self.shell.cli, "perform_crawl", side_effect=fake_crawl):
@@ -242,11 +288,15 @@ class AgentHarnessTests(unittest.TestCase):
             deadline = time.time() + 2
             while time.time() < deadline:
                 counts = db.get_agent_worker_counts()
-                if counts["total"] == 2 and counts["idle"] == 2 and counts["running"] == 0:
+                if (
+                    counts["total"] == len(self.shell.config["sources"])
+                    and counts["idle"] == len(self.shell.config["sources"])
+                    and counts["running"] == 0
+                ):
                     break
                 time.sleep(0.01)
 
-        self.assertEqual(db.get_agent_worker_counts()["total"], 2)
+        self.assertEqual(db.get_agent_worker_counts()["total"], len(self.shell.config["sources"]))
 
     def test_background_batch_failure_is_recorded(self):
         def fail_crawl(*_args, **_kwargs):
@@ -264,7 +314,7 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertIn("archive offline", latest["error"])
         worker_counts = db.get_agent_worker_counts()
         self.assertEqual(worker_counts["failed"], 1)
-        self.assertEqual(worker_counts["idle"], 1)
+        self.assertEqual(worker_counts["idle"], len(self.shell.config["sources"]) - 1)
 
     def test_cli_backed_tool_capture_streams_visible_output(self):
         visible_output = io.StringIO()

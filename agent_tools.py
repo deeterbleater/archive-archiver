@@ -298,6 +298,7 @@ class AppToolRunner:
         self.shell = shell
         self._batch_lock = threading.Lock()
         self._batches = {}
+        self._ensure_worker_slots(self.shell.config.get("sources") or [])
 
     def execute(self, name, arguments):
         handlers = {
@@ -385,6 +386,23 @@ class AppToolRunner:
             rows = sorted(self._batches.values(), key=lambda row: row["started_at"], reverse=True)
             return [dict(row) for row in rows[:limit]]
 
+    def _normalize_sources(self, sources):
+        if sources is None:
+            return list(self.shell.config["sources"])
+        if isinstance(sources, str):
+            sources = [sources]
+        normalized = [str(source).strip() for source in sources if str(source).strip()]
+        return normalized or list(self.shell.config["sources"])
+
+    def _ensure_worker_slots(self, sources):
+        for source in self._normalize_sources(sources):
+            db.upsert_agent_worker(
+                f"search:{source}",
+                tool="search",
+                label=f"{source} / idle",
+                status="idle",
+            )
+
     def _start_batch(self, tool, label, target, *args, worker_id=None, **kwargs):
         batch_id = f"{tool}-{uuid.uuid4().hex[:8]}"
         worker_id = worker_id or batch_id
@@ -447,7 +465,7 @@ class AppToolRunner:
                 worker_id,
                 tool=tool,
                 label=label,
-                status="complete",
+                status="idle",
                 started_at=updated["started_at"],
                 finished_at=updated["finished_at"],
             )
@@ -573,7 +591,8 @@ class AppToolRunner:
         return {"ok": True, "engine": "duckduckgo", "query": query, "results": results}
 
     def search(self, query, max_results=None, sources=None):
-        selected_sources = sources or self.shell.config["sources"]
+        selected_sources = self._normalize_sources(sources)
+        self._ensure_worker_slots(selected_sources)
         if hasattr(self.shell, "_log_agent_status"):
             self.shell._log_agent_status(
                 f"Searching archive sources for '{query}' across {', '.join(selected_sources)}.",

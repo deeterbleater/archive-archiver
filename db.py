@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import re
 import sqlite3
 
@@ -40,6 +41,25 @@ DEFAULT_CATEGORIES = [
     },
 ]
 
+DEFAULT_CATEGORY_NAMES = {category["name"] for category in DEFAULT_CATEGORIES} | {"uncategorized", "unprocessed"}
+CATEGORY_ARTIFACT_WORDS = {
+    "aacode", "asciihexdecode", "binary", "bitspercomponent", "ccittfaxdecode",
+    "decode", "dictionary", "endobj", "endstream", "filter", "flatedecode",
+    "fontdescriptor", "length", "obj", "objstm", "startxref", "stream",
+    "trailer", "xref",
+}
+CATEGORY_GENERIC_WORDS = {
+    "archive", "author", "book", "books", "chapter", "file", "files",
+    "library", "page", "pages", "text", "texts", "unknown", "work", "works",
+}
+DOMAIN_CATEGORY_WORDS = {
+    "alchemy", "alchemical", "anarchist", "anarchism", "babylonian",
+    "chaos", "esoteric", "grimoire", "hermetic", "kabalah", "magick",
+    "occult", "pagan", "qabbalah", "ritual", "thelema", "thelemic",
+    "theosophy", "witchcraft",
+}
+_WORDLIST = None
+
 def get_connection():
     """Returns a connection to the SQLite database."""
     conn = sqlite3.connect(DB_FILE)
@@ -57,6 +77,59 @@ def _ensure_column(cursor, table, column, definition):
 def _category_name(value):
     name = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
     return name or "uncategorized"
+
+
+def _wordlist():
+    global _WORDLIST
+    if _WORDLIST is not None:
+        return _WORDLIST
+    for path in ("/usr/share/dict/words", "/usr/share/dict/american-english"):
+        word_path = Path(path)
+        if not word_path.exists():
+            continue
+        words = set()
+        try:
+            for line in word_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                word = line.strip().lower()
+                if re.fullmatch(r"[a-z]{4,}", word):
+                    words.add(word)
+        except OSError:
+            continue
+        if words:
+            _WORDLIST = words
+            return _WORDLIST
+    _WORDLIST = set()
+    return _WORDLIST
+
+
+def _is_probable_category_word(word):
+    if word in DOMAIN_CATEGORY_WORDS:
+        return True
+    words = _wordlist()
+    return not words or word in words
+
+
+def is_valid_dynamic_category_name(value):
+    name = _category_name(value)
+    if name in DEFAULT_CATEGORY_NAMES:
+        return True
+    if len(name) < 4 or len(name) > 48:
+        return False
+    if re.search(r"\d", name):
+        return False
+    if not re.fullmatch(r"[a-z]+(?:_[a-z]+){0,2}", name):
+        return False
+    parts = name.split("_")
+    if any(len(part) < 4 for part in parts):
+        return False
+    if any(part in CATEGORY_ARTIFACT_WORDS or part in CATEGORY_GENERIC_WORDS for part in parts):
+        return False
+    if not any(re.search(r"[aeiouy]", part) for part in parts):
+        return False
+    if not all(_is_probable_category_word(part) for part in parts):
+        return False
+    return True
+
 
 def init_db():
     """Initializes the SQLite database tables."""
@@ -353,7 +426,7 @@ def get_agent_worker_counts():
     SELECT
         COUNT(*) AS total,
         COUNT(CASE WHEN status = 'running' THEN 1 END) AS running,
-        COUNT(CASE WHEN status IN ('complete', 'failed') THEN 1 END) AS idle,
+        COUNT(CASE WHEN status IN ('idle', 'complete') THEN 1 END) AS idle,
         COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed
     FROM agent_workers
     """)
