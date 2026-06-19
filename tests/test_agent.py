@@ -234,6 +234,30 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(rows[1]["phase"], "start")
         self.assertEqual(rows[0]["session_id"], self.shell.session_id)
 
+    def test_goal_model_error_pauses_goal_and_logs_event(self):
+        goal = self.shell.goal_store.create("Keep going despite provider errors")
+
+        with mock.patch("llm.chat_completion", side_effect=RuntimeError("provider exploded")):
+            self.shell._run_goal(goal, max_cycles=1)
+
+        updated = self.shell.goal_store.get(goal["id"])
+        latest = db.get_latest_agent_status()
+        self.assertEqual(updated["status"], "active")
+        self.assertTrue(any(event["kind"] == "error" for event in updated["events"]))
+        self.assertEqual(latest["phase"], "error")
+        self.assertIn("provider exploded", latest["message"])
+
+    def test_chat_model_error_returns_visible_message(self):
+        with mock.patch("llm.chat_completion", side_effect=RuntimeError("provider exploded")):
+            result = self.shell._run_llm_tool_loop(
+                [{"role": "user", "content": "hello"}],
+                loop_kind="chat",
+            )
+
+        latest = db.get_latest_agent_status()
+        self.assertIn("provider exploded", result)
+        self.assertEqual(latest["phase"], "error")
+
     def test_tool_timeout_returns_error_and_logs_status(self):
         original_timeout = agent_tools.TOOL_TIMEOUTS["search"]
         agent_tools.TOOL_TIMEOUTS["search"] = 1

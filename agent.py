@@ -96,6 +96,10 @@ class AgentCommandError(ValueError):
     pass
 
 
+class AgentLoopError(RuntimeError):
+    pass
+
+
 class ArchiveAgentShell(cmd.Cmd):
     prompt = terminal_theme.prompt()
 
@@ -302,11 +306,25 @@ class ArchiveAgentShell(cmd.Cmd):
                 )
                 return "[goal] halted by operator."
             self._touch_agent_activity(f"{loop_kind} loop {iteration} waiting for model")
-            completion = llm.chat_completion(
-                messages,
-                model=self._active_model(),
-                tools=agent_tools.TOOL_SCHEMAS,
-            )
+            try:
+                completion = llm.chat_completion(
+                    messages,
+                    model=self._active_model(),
+                    tools=agent_tools.TOOL_SCHEMAS,
+                )
+            except Exception as exc:
+                message = f"{loop_kind.title()} loop {iteration} model call failed: {type(exc).__name__}: {exc}"
+                self._touch_agent_activity(f"{loop_kind} loop {iteration} model call failed")
+                self._log_agent_status(
+                    message,
+                    loop_kind=loop_kind,
+                    phase="error",
+                    goal_id=goal_id,
+                )
+                terminal_theme.print_markup(f"[danger][!][/danger] {message}")
+                if loop_kind == "goal":
+                    raise AgentLoopError(message) from exc
+                return message
             self._touch_agent_activity(f"{loop_kind} loop {iteration} received model response")
             if stop_checker and stop_checker():
                 self._log_agent_status(
@@ -799,6 +817,35 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             self.goal_store.append_event(goal["id"], "interrupted", "goal run interrupted by operator")
             self.current_goal = goal
             terminal_theme.print_markup("\n[warning]goal[/warning] interrupted; goal remains active and can be resumed")
+        except AgentLoopError as exc:
+            goal = self.goal_store.update(self.current_goal["id"], status="active")
+            self.goal_store.append_event(goal["id"], "error", str(exc))
+            self._log_agent_status(
+                f"Goal loop paused after error: {exc}",
+                loop_kind="goal",
+                phase="error",
+                goal_id=goal["id"],
+            )
+            self.current_goal = goal
+            terminal_theme.print_markup(
+                "\n[warning]goal[/warning] paused after a model/API error; "
+                "the goal remains active and can be resumed."
+            )
+        except Exception as exc:
+            message = f"Goal loop crashed: {type(exc).__name__}: {exc}"
+            goal = self.goal_store.update(self.current_goal["id"], status="active")
+            self.goal_store.append_event(goal["id"], "error", message)
+            self._log_agent_status(
+                message,
+                loop_kind="goal",
+                phase="error",
+                goal_id=goal["id"],
+            )
+            self.current_goal = goal
+            terminal_theme.print_markup(
+                "\n[danger][!][/danger] goal paused after an unexpected error; "
+                "the goal remains active and can be resumed."
+            )
         finally:
             if cleanup_key_watcher:
                 cleanup_key_watcher()
