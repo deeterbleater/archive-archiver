@@ -13,6 +13,10 @@ load_dotenv()
 DEFAULT_MODEL = "minimax/minimax-m3"
 DEFAULT_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "60"))
 ANALYSIS_BUBBLE_RESPONSE_CHARS = int(os.getenv("ALGE_ANALYSIS_BUBBLE_RESPONSE_CHARS", "1600"))
+OPENROUTER_APP_HEADERS = {
+    "HTTP-Referer": "https://github.com/deeterbleater/archive-archiver",
+    "X-Title": "ALGE Crawler",
+}
 
 def get_openrouter_client():
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -37,10 +41,7 @@ def chat_with_llm(messages, model=None, temperature=0.4):
     response = client.chat.completions.create(
         model=model,
         messages=messages,
-        extra_headers={
-            "HTTP-Referer": "https://github.com/deeterbleater/archive-archiver",
-            "X-Title": "ALGE Archive Harness",
-        },
+        extra_headers=OPENROUTER_APP_HEADERS,
         temperature=temperature,
     )
     return response.choices[0].message.content.strip()
@@ -57,10 +58,7 @@ def chat_completion(messages, model=None, tools=None, temperature=0.4):
     kwargs = {
         "model": model,
         "messages": messages,
-        "extra_headers": {
-            "HTTP-Referer": "https://github.com/deeterbleater/archive-archiver",
-            "X-Title": "ALGE Archive Harness",
-        },
+        "extra_headers": OPENROUTER_APP_HEADERS,
         "temperature": temperature,
     }
     if tools:
@@ -145,10 +143,7 @@ Return ONLY a valid JSON object matching the following structure. Do not output 
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt}
             ],
-            extra_headers={
-                "HTTP-Referer": "https://github.com/google-gemini/antigravity",
-                "X-Title": "Archive Crawler"
-            },
+            extra_headers=OPENROUTER_APP_HEADERS,
             temperature=0.1
         )
         
@@ -235,10 +230,7 @@ Return ONLY a valid JSON object matching the following structure. Do not output 
                 {"role": "system", "content": "You are a precise query generation assistant. You output only structured JSON."},
                 {"role": "user", "content": prompt}
             ],
-            extra_headers={
-                "HTTP-Referer": "https://github.com/google-gemini/antigravity",
-                "X-Title": "Archive Crawler"
-            },
+            extra_headers=OPENROUTER_APP_HEADERS,
             temperature=0.7
         )
         
@@ -305,10 +297,7 @@ Return ONLY the Markdown content. Do not add conversational intro/outro text.
                 {"role": "system", "content": "You are a professional academic research reporter. You output detailed Markdown analysis."},
                 {"role": "user", "content": prompt}
             ],
-            extra_headers={
-                "HTTP-Referer": "https://github.com/google-gemini/antigravity",
-                "X-Title": "Archive Crawler"
-            },
+            extra_headers=OPENROUTER_APP_HEADERS,
             temperature=0.3
         )
         return response.choices[0].message.content.strip()

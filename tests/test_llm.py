@@ -7,6 +7,13 @@ import terminal_theme
 
 
 class LlmTests(unittest.TestCase):
+    def test_openrouter_app_headers_use_alge_crawler_label(self):
+        self.assertEqual(llm.OPENROUTER_APP_HEADERS["X-Title"], "ALGE Crawler")
+        self.assertEqual(
+            llm.OPENROUTER_APP_HEADERS["HTTP-Referer"],
+            "https://github.com/deeterbleater/archive-archiver",
+        )
+
     def test_parse_page_with_llm_prints_analysis_bubbles(self):
         response = SimpleNamespace(
             choices=[
@@ -39,6 +46,11 @@ class LlmTests(unittest.TestCase):
         self.assertIn("crawler -> analyzer", output)
         self.assertIn("analyzer -> crawler", output)
         self.assertIn("Parsed analyzer JSON successfully", output)
+        client.chat.completions.create.assert_called_once()
+        self.assertEqual(
+            client.chat.completions.create.call_args.kwargs["extra_headers"],
+            llm.OPENROUTER_APP_HEADERS,
+        )
 
 
 if __name__ == "__main__":
