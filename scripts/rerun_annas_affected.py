@@ -49,7 +49,7 @@ def _normalize_match_text(value):
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
-def affected_works(db_file=DB_FILE, include_resolved=False, limit=None):
+def affected_works(db_file=DB_FILE, include_resolved=False, limit=None, start_after_work_id=None):
     conn = _connect(db_file)
     rows = conn.execute("""
     SELECT
@@ -82,6 +82,8 @@ def affected_works(db_file=DB_FILE, include_resolved=False, limit=None):
     works = {}
     for row in rows:
         item = dict(row)
+        if start_after_work_id is not None and item["work_id"] <= start_after_work_id:
+            continue
         if not (
             _is_page_path(item.get("url"))
             or _is_page_path(item.get("download_url"))
@@ -234,6 +236,7 @@ def main():
     )
     parser.add_argument("--db-file", default=str(DB_FILE))
     parser.add_argument("--limit", type=int, help="Maximum affected works to rerun.")
+    parser.add_argument("--start-after-work-id", type=int, help="Resume after this affected work id.")
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--include-resolved", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -257,6 +260,7 @@ def main():
         db_file=args.db_file,
         include_resolved=args.include_resolved,
         limit=args.limit,
+        start_after_work_id=args.start_after_work_id,
     )
     print(f"affected works selected: {len(works)}", flush=True)
     if not works:

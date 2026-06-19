@@ -59,6 +59,16 @@ class AnnasRerunScriptTests(unittest.TestCase):
         self.assertEqual(rows[0]["work_id"], work_id)
         self.assertEqual(rerun_annas_affected.query_for_work(rows[0]), "Stubbed Anna Work Ada Author")
 
+    def test_affected_works_can_resume_after_work_id(self):
+        work_id = self._add_stubbed_work()
+
+        rows = rerun_annas_affected.affected_works(
+            db_file=db.DB_FILE,
+            start_after_work_id=work_id,
+        )
+
+        self.assertEqual(rows, [])
+
     def test_affected_works_skips_stub_resolved_by_processed_duplicate(self):
         self._add_stubbed_work()
         replacement_id = db.add_work("Stubbed Anna Work", "Ada Author", "anna repair")
