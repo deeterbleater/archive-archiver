@@ -50,8 +50,11 @@ def _size_rank(value):
 
 def file_preference_key(row):
     download_url = str(row.get("download_url") or row.get("url") or "")
-    parsed = urllib.parse.urlparse(download_url)
-    available_rank = 0 if parsed.scheme in ("http", "https") and parsed.netloc else 1
+    try:
+        parsed = urllib.parse.urlparse(download_url)
+        available_rank = 0 if parsed.scheme in ("http", "https") and parsed.netloc else 1
+    except ValueError:
+        available_rank = 2
     return (
         available_rank,
         _format_rank(row.get("format")),

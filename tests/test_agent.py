@@ -324,6 +324,16 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertIn("crawler transcript for archive_org", outputs["archive_org / egoism"])
         self.assertIn("crawler transcript for arxiv", outputs["arxiv / egoism"])
         self.assertNotIn("crawler transcript", visible_output.getvalue())
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            worker_counts = db.get_agent_worker_counts()
+            if (
+                worker_counts["total"] == len(self.shell.config["sources"])
+                and worker_counts["idle"] == len(self.shell.config["sources"])
+                and worker_counts["running"] == 0
+            ):
+                break
+            time.sleep(0.01)
         worker_counts = db.get_agent_worker_counts()
         self.assertEqual(worker_counts["total"], len(self.shell.config["sources"]))
         self.assertEqual(worker_counts["idle"], len(self.shell.config["sources"]))

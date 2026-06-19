@@ -212,6 +212,24 @@ class ScraperSourceTests(unittest.TestCase):
 
         self.assertEqual(best["format"], "Text")
 
+    def test_select_best_file_tolerates_malformed_analyzer_urls(self):
+        rows = [
+            {
+                "format": "PDF",
+                "file_size": "2 MB",
+                "download_url": "https://[broken",
+            },
+            {
+                "format": "EPUB",
+                "file_size": "1 MB",
+                "download_url": "https://example.org/work.epub",
+            },
+        ]
+
+        best = scrapers.select_best_file(rows)
+
+        self.assertEqual(best["download_url"], "https://example.org/work.epub")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -391,6 +391,145 @@ class PipelineStateTests(unittest.TestCase):
                     quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
                 )
 
+    def test_http_download_preserves_response_extension_after_quarantine(self):
+        class FakeResponse:
+            status_code = 200
+            url = "https://example.org/book.pdf"
+            headers = {"Content-Type": "application/pdf"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_content(self, chunk_size=1):
+                yield b"%PDF fixture"
+
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "example.org",
+            "format": "PDF",
+            "download_url": "https://example.org/book.pdf",
+            "trust_level": "trusted",
+        }
+
+        with mock.patch("downloader.requests.get", return_value=FakeResponse()):
+            with mock.patch("downloader.scanner.scan_file", return_value={"status": "clean", "engine": "fixture", "signature": None}):
+                metadata = downloader.download_file(
+                    row,
+                    bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                    quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                )
+
+        self.assertTrue(metadata["storage_key"].endswith(".pdf"))
+
+    def test_onion_download_requires_tor_proxy(self):
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "bookszlibb74ugqojhzhg2a63w5i2atv5bqarulgczawnbmsb6s6qead.onion",
+            "format": "EPUB",
+            "download_url": "http://bookszlibb74ugqojhzhg2a63w5i2atv5bqarulgczawnbmsb6s6qead.onion/md5/abc",
+        }
+
+        with self.assertRaisesRegex(ValueError, "Tor proxy"):
+            downloader.download_file(
+                row,
+                bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                tor_proxy="",
+            )
+
+    def test_onion_download_uses_socks_proxy_when_configured(self):
+        class FakeResponse:
+            status_code = 200
+            url = "http://exampleonionaddress.onion/file.epub"
+            headers = {"Content-Type": "application/epub+zip"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_content(self, chunk_size=1):
+                yield b"epub bytes"
+
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "exampleonionaddress.onion",
+            "format": "EPUB",
+            "download_url": "http://exampleonionaddress.onion/file.epub",
+            "trust_level": "trusted",
+        }
+
+        with mock.patch("downloader.requests.get", return_value=FakeResponse()) as get:
+            with mock.patch("downloader.scanner.scan_file", return_value={"status": "clean", "engine": "fixture", "signature": None}):
+                metadata = downloader.download_file(
+                    row,
+                    bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                    quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                    tor_proxy="socks5h://127.0.0.1:9050",
+                )
+
+        self.assertEqual(metadata["http_status"], 200)
+        self.assertEqual(
+            get.call_args.kwargs["proxies"],
+            {"http": "socks5h://127.0.0.1:9050", "https": "socks5h://127.0.0.1:9050"},
+        )
+
+    def test_torrent_download_resolves_payload_file(self):
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "archive.org",
+            "format": "Archive BitTorrent",
+            "download_url": "https://archive.org/download/example/example_archive.torrent",
+            "trust_level": "trusted",
+        }
+
+        def fake_run(command, **_kwargs):
+            staging = Path(command[command.index("--dir") + 1])
+            (staging / "cover.jpg").write_bytes(b"image")
+            (staging / "book.txt").write_text("actual text payload", encoding="utf-8")
+            return mock.Mock(returncode=0)
+
+        with mock.patch("downloader.shutil.which", return_value="/usr/bin/aria2c"):
+            with mock.patch("downloader.subprocess.run", side_effect=fake_run) as run:
+                with mock.patch("downloader.scanner.scan_file", return_value={"status": "clean", "engine": "fixture", "signature": None}):
+                    metadata = downloader.download_file(
+                        row,
+                        bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                        quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                    )
+
+        raw_path = Path(metadata["bucket_uri"].replace("file://", ""))
+        self.assertTrue(raw_path.exists())
+        self.assertEqual(raw_path.read_text(encoding="utf-8"), "actual text payload")
+        self.assertEqual(metadata["content_type"], "text/plain")
+        self.assertEqual(metadata["http_status"], 200)
+        self.assertIn("--follow-torrent=mem", run.call_args.args[0])
+
+    def test_torrent_download_requires_client(self):
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "archive.org",
+            "format": "Archive BitTorrent",
+            "download_url": "https://archive.org/download/example/example_archive.torrent",
+        }
+
+        with mock.patch("downloader.shutil.which", return_value=None):
+            with self.assertRaisesRegex(ValueError, "no torrent client"):
+                downloader.download_file(
+                    row,
+                    bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                    quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                )
+
     def test_domain_workers_process_one_queue_per_domain(self):
         alpha_work_id = db.add_work(title="Alpha Domain Fixture", author="Test Author", search_query="domains")
         db.add_file(

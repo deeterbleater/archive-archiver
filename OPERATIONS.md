@@ -457,6 +457,27 @@ Raw object archival:
 - SQLite records `raw_archive_uri`, `raw_archive_status`, `raw_archived_at`,
   and `local_raw_deleted_at`.
 
+Tor/.onion downloads:
+
+- Install and run a local Tor SOCKS listener before enabling `.onion` downloads.
+- Set `ALGE_TOR_PROXY=socks5h://127.0.0.1:9050`.
+- The `socks5h` scheme is required so `.onion` host resolution happens through
+  Tor, not normal DNS.
+- If `ALGE_TOR_PROXY` is unset, `.onion` download candidates fail fast with a
+  clear error and fall out of the pending queue like other failed downloads.
+
+Torrent fallback:
+
+- Torrent rows are resolved into an actual payload before extraction. ALGE does
+  not archive the `.torrent` metadata as if it were the work.
+- Supported clients are `aria2c` and `transmission-cli`; set
+  `ALGE_TORRENT_CLIENT` to force one, or leave unset for auto-detection.
+- `ALGE_TORRENT_TIMEOUT` controls the maximum runtime per torrent download and
+  defaults to `1800` seconds.
+- Completed torrent payloads are staged under quarantine, filtered to
+  plaintext-extractable formats, virus-scanned, and only then promoted into the
+  raw bucket.
+
 Build a corpus:
 
 ```sh
