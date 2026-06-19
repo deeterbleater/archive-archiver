@@ -171,10 +171,20 @@ def summary():
     extra = _one("""
         SELECT
             COALESCE(SUM(downloads.bytes), 0) AS downloaded_bytes,
-            COALESCE(SUM(extractions.char_count), 0) AS extracted_chars,
+            COALESCE(SUM(CASE
+                WHEN extractions.status = 'processed'
+                 AND COALESCE(extractions.quality_status, 'usable') != 'unusable'
+                THEN extractions.char_count
+                ELSE 0
+            END), 0) AS extracted_chars,
             COUNT(DISTINCT CASE WHEN downloads.status = 'downloaded' THEN downloads.file_id END) AS downloaded_files,
             COUNT(DISTINCT CASE WHEN downloads.status = 'failed' THEN downloads.file_id END) AS failed_download_files,
-            COUNT(DISTINCT CASE WHEN extractions.status = 'processed' THEN extractions.id END) AS processed_texts,
+            COUNT(DISTINCT CASE
+                WHEN extractions.status = 'processed'
+                 AND COALESCE(extractions.quality_status, 'usable') != 'unusable'
+                THEN extractions.id
+            END) AS processed_texts,
+            COUNT(DISTINCT CASE WHEN extractions.quality_status = 'unusable' THEN extractions.id END) AS rejected_texts,
             COUNT(DISTINCT CASE WHEN files.trust_level = 'untrusted' THEN files.id END) AS untrusted_files,
             COUNT(DISTINCT CASE WHEN downloads.scan_status = 'clean' THEN downloads.id END) AS clean_scans,
             COUNT(DISTINCT CASE WHEN downloads.scan_status = 'infected' THEN downloads.id END) AS infected_scans,
@@ -597,6 +607,7 @@ def list_texts(
     q: Optional[str] = None,
     site: Optional[str] = None,
     category: Optional[str] = None,
+    quality: Optional[str] = None,
     status: str = "processed",
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     offset: int = Query(0, ge=0),
@@ -613,6 +624,9 @@ def list_texts(
     if category:
         filters.append("COALESCE(extractions.category, 'uncategorized') = ?")
         params.append(category)
+    if quality:
+        filters.append("COALESCE(extractions.quality_status, 'unvalidated') = ?")
+        params.append(quality)
     if q:
         filters.append("""
         (
@@ -640,6 +654,11 @@ def list_texts(
             extractions.text_uri,
             extractions.warnings,
             extractions.error,
+            COALESCE(extractions.quality_status, 'unvalidated') AS quality_status,
+            extractions.quality_score,
+            extractions.quality_reason,
+            extractions.quality_model,
+            extractions.quality_validated_at,
             extractions.updated_at,
             extractions.processed_at,
             downloads.id AS download_id,
@@ -689,6 +708,11 @@ def get_text(
             extractions.text_uri,
             extractions.warnings,
             extractions.error,
+            COALESCE(extractions.quality_status, 'unvalidated') AS quality_status,
+            extractions.quality_score,
+            extractions.quality_reason,
+            extractions.quality_model,
+            extractions.quality_validated_at,
             extractions.updated_at,
             extractions.processed_at,
             downloads.bytes,

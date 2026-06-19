@@ -193,9 +193,20 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["title"], "API Fixture")
         self.assertEqual(rows[0]["category"], "philosophy")
+        self.assertEqual(rows[0]["quality_status"], "unvalidated")
         self.assertEqual(payload["text"], "First line o")
         self.assertTrue(payload["truncated"])
         self.assertEqual(payload["preview_chars"], 12)
+
+    def test_summary_counts_rejected_text_validation(self):
+        self._add_fixture()
+        row = self.api.list_texts(q="fixture", category="philosophy", limit=50, offset=0)[0]
+        db.mark_text_quality(row["extraction_id"], "unusable", score=0.01, reason="garbage", model="fixture")
+
+        summary = self.api.summary()
+
+        self.assertEqual(summary["processed_texts"], 0)
+        self.assertEqual(summary["rejected_texts"], 1)
 
     def test_dimensions_include_dynamic_category_metadata(self):
         db.ensure_category(

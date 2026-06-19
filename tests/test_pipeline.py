@@ -1,12 +1,15 @@
 import json
+import gzip
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import corpus
 import db
 import downloader
 import processor
+import text_validator
 
 
 class PipelineStateTests(unittest.TestCase):
@@ -75,6 +78,84 @@ class PipelineStateTests(unittest.TestCase):
 
         self.assertEqual(stats["downloads_by_status"], {"downloaded": 1})
         self.assertEqual(stats["extractions_by_status"], {"processed": 1})
+
+    def test_gzip_text_extracts_plaintext_instead_of_bytes(self):
+        path = Path(self.tempdir.name) / "fixture.txt.gz"
+        path.write_bytes(gzip.compress(b"This is readable compressed text.\nSecond line."))
+
+        text, mode = processor.extract_plaintext(path, format_hint="Text")
+
+        self.assertEqual(mode, "text.gz")
+        self.assertIn("readable compressed text", text)
+        self.assertNotIn("\x8b", text)
+
+    def test_local_validator_rejects_binary_garbage(self):
+        result = text_validator.heuristic_quality("\x8b\b\b\x00\x00\x00garbage")
+
+        self.assertEqual(result["status"], "unusable")
+        self.assertFalse(result["needs_llm"])
+
+    def test_validator_parses_json_object_with_trailing_text(self):
+        payload = text_validator._parse_json_object('{"usable": true, "score": 0.8, "reason": "ok"}\nextra')
+
+        self.assertTrue(payload["usable"])
+        self.assertEqual(payload["score"], 0.8)
+
+    def test_unusable_texts_are_excluded_from_corpus_candidates(self):
+        self._add_processed_text("Bad Bytes", "Readable fixture used for db state.")
+        extraction = db.get_processed_extractions(limit=1)[0]
+
+        db.mark_text_quality(
+            extraction["extraction_id"],
+            "unusable",
+            score=0.02,
+            reason="binary garbage",
+            model="local-heuristic",
+        )
+
+        self.assertEqual(db.get_processed_extractions(limit=10), [])
+
+    def test_remove_unusable_marks_extraction_skipped_and_deletes_text(self):
+        self._add_processed_text("Delete Bad Bytes", "Readable fixture used for cleanup.")
+        extraction = db.get_processed_extractions(limit=1)[0]
+        text_path = Path(extraction["text_uri"].replace("file://", ""))
+        db.mark_text_quality(
+            extraction["extraction_id"],
+            "unusable",
+            score=0.02,
+            reason="binary garbage",
+            model="local-heuristic",
+        )
+
+        result = text_validator.remove_unusable(verbose=False)
+
+        self.assertEqual(result["removed"], 1)
+        self.assertFalse(text_path.exists())
+        conn = db.get_connection()
+        row = conn.execute("SELECT status, text_uri FROM extractions WHERE id = ?", (extraction["extraction_id"],)).fetchone()
+        conn.close()
+        self.assertEqual(row["status"], "skipped")
+        self.assertIsNone(row["text_uri"])
+
+    def test_text_validation_can_run_with_worker_pool(self):
+        self._add_processed_text("Worker Alpha", "Readable fixture used for worker pool.")
+        self._add_processed_text("Worker Beta", "Another readable fixture used for worker pool.")
+
+        def fake_validate(row, model=None, use_llm=True):
+            return {
+                "status": "usable",
+                "score": 0.9,
+                "reason": f"ok {row['title']}",
+                "model": model,
+            }
+
+        with mock.patch("text_validator.validate_text", side_effect=fake_validate):
+            results = text_validator.validate_pending(limit=2, workers=2, model="fixture/model")
+
+        self.assertEqual(results["checked"], 2)
+        self.assertEqual(results["usable"], 2)
+        rows = db.get_processed_extractions(limit=2)
+        self.assertTrue(all(row["quality_status"] == "usable" for row in rows))
 
     def test_failed_download_falls_off_pending_list(self):
         work_id = db.add_work(title="Broken Link", author="Test Author", search_query="failures")

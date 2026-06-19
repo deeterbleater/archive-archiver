@@ -67,6 +67,7 @@ import corpus
 import agent
 import dashboard
 import terminal_theme
+import text_validator
 
 PUBLIC_COLLECTOR_QUERIES = [
     "public domain philosophy",
@@ -702,6 +703,28 @@ def handle_process(args):
     print("=================================================")
 
 
+def handle_validate_texts(args):
+    if args.remove_unusable:
+        results = text_validator.remove_unusable(limit=args.limit, verbose=True)
+        print("\n=============== TEXT REJECTION CLEANUP ==========")
+        for status, count in results.items():
+            print(f"{status}: {count}")
+        print("=================================================")
+        return
+    results = text_validator.validate_pending(
+        limit=args.limit,
+        model=args.validator_model,
+        include_validated=args.recheck,
+        use_llm=not args.no_llm,
+        verbose=True,
+        workers=args.workers,
+    )
+    print("\n=============== TEXT VALIDATION SUMMARY =========")
+    for status, count in results.items():
+        print(f"{status}: {count}")
+    print("=================================================")
+
+
 def handle_archive_raw(args):
     results = processor.archive_processed_raws(
         limit=args.limit,
@@ -814,6 +837,15 @@ def main():
     parser_process.add_argument("--bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
     parser_process.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
 
+    # Text Validation Command
+    parser_validate = subparsers.add_parser("validate-texts", help="Validate extracted plaintext legibility.")
+    parser_validate.add_argument("--limit", type=int, default=25, help="Maximum extracted texts to validate in this run.")
+    parser_validate.add_argument("--validator-model", default=text_validator.DEFAULT_VALIDATOR_MODEL, help="OpenRouter model for ambiguous legibility checks.")
+    parser_validate.add_argument("--workers", type=int, default=4, help="Concurrent validator workers for OpenRouter calls.")
+    parser_validate.add_argument("--recheck", action="store_true", help="Recheck already validated text rows.")
+    parser_validate.add_argument("--no-llm", action="store_true", help="Only use local byte/prose heuristics.")
+    parser_validate.add_argument("--remove-unusable", action="store_true", help="Remove text artifacts already marked unusable and mark their extraction skipped.")
+
     # Archive Raw Command
     parser_archive_raw = subparsers.add_parser("archive-raw", help="Upload processed raw originals to S3-compatible object storage.")
     parser_archive_raw.add_argument("--limit", type=int, default=10, help="Maximum processed raw downloads to archive.")
@@ -894,6 +926,8 @@ def main():
         handle_download(args)
     elif args.command == "process":
         handle_process(args)
+    elif args.command == "validate-texts":
+        handle_validate_texts(args)
     elif args.command == "archive-raw":
         handle_archive_raw(args)
     elif args.command == "collect":

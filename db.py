@@ -205,6 +205,11 @@ def init_db():
         char_count INTEGER,
         category TEXT,
         warnings TEXT,
+        quality_status TEXT,
+        quality_score REAL,
+        quality_reason TEXT,
+        quality_model TEXT,
+        quality_validated_at TIMESTAMP,
         error TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -264,6 +269,11 @@ def init_db():
     _ensure_column(cursor, "downloads", "raw_archive_error", "TEXT")
     _ensure_column(cursor, "downloads", "raw_archived_at", "TIMESTAMP")
     _ensure_column(cursor, "downloads", "local_raw_deleted_at", "TIMESTAMP")
+    _ensure_column(cursor, "extractions", "quality_status", "TEXT")
+    _ensure_column(cursor, "extractions", "quality_score", "REAL")
+    _ensure_column(cursor, "extractions", "quality_reason", "TEXT")
+    _ensure_column(cursor, "extractions", "quality_model", "TEXT")
+    _ensure_column(cursor, "extractions", "quality_validated_at", "TIMESTAMP")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS corpus_specs (
@@ -932,6 +942,17 @@ def mark_extraction_succeeded(download_id, extractor, text_uri, text_sha256, cha
     conn.commit()
     conn.close()
 
+
+def get_extraction(download_id, extractor):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT * FROM extractions WHERE download_id = ? AND extractor = ?
+    """, (download_id, extractor))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def mark_extraction_skipped(download_id, extractor, reason):
     """Marks a downloaded object as intentionally skipped by this extractor."""
     conn = get_connection()
@@ -963,6 +984,130 @@ def mark_extraction_failed(download_id, extractor, error):
     """, (str(error)[:1000], download_id, extractor))
     conn.commit()
     conn.close()
+
+
+def mark_text_quality(extraction_id, status, score=None, reason=None, model=None):
+    """Persists the legibility validator result for one extracted plaintext row."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE extractions
+    SET
+        quality_status = ?,
+        quality_score = ?,
+        quality_reason = ?,
+        quality_model = ?,
+        quality_validated_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+    """, (
+        str(status),
+        score,
+        str(reason or "")[:1000],
+        model,
+        extraction_id,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def reject_text_extraction(extraction_id, reason=None):
+    """Removes an unusable plaintext extraction from the usable archive surface."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT text_uri FROM extractions WHERE id = ?
+    """, (extraction_id,))
+    row = cursor.fetchone()
+    cursor.execute("""
+    UPDATE extractions
+    SET
+        status = 'skipped',
+        text_uri = NULL,
+        warnings = ?,
+        error = NULL,
+        updated_at = CURRENT_TIMESTAMP,
+        processed_at = COALESCE(processed_at, CURRENT_TIMESTAMP)
+    WHERE id = ?
+    """, (str(reason or "rejected by text quality validation")[:1000], extraction_id))
+    conn.commit()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_text_quality_candidates(limit=10, include_validated=False):
+    """Returns processed text rows that need legibility validation."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    filters = [
+        "extractions.status = 'processed'",
+        "extractions.text_uri IS NOT NULL",
+    ]
+    if not include_validated:
+        filters.append("(extractions.quality_status IS NULL OR extractions.quality_status = 'error')")
+    cursor.execute(f"""
+    SELECT
+        extractions.id AS extraction_id,
+        extractions.download_id,
+        extractions.extractor,
+        extractions.text_uri,
+        extractions.text_sha256,
+        extractions.char_count,
+        extractions.category,
+        extractions.warnings,
+        extractions.quality_status,
+        extractions.quality_score,
+        extractions.quality_reason,
+        downloads.id AS download_id,
+        files.id AS file_id,
+        files.work_id,
+        files.site,
+        files.format,
+        files.url,
+        files.download_url,
+        works.title,
+        works.author,
+        works.search_query
+    FROM extractions
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE {" AND ".join(filters)}
+    ORDER BY extractions.quality_validated_at IS NOT NULL, extractions.updated_at DESC, extractions.id DESC
+    LIMIT ?
+    """, (limit,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_unusable_text_extractions(limit=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    params = []
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(limit)
+    cursor.execute(f"""
+    SELECT
+        extractions.id AS extraction_id,
+        extractions.text_uri,
+        extractions.quality_reason,
+        works.title,
+        files.site
+    FROM extractions
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE extractions.quality_status = 'unusable'
+      AND extractions.status = 'processed'
+    ORDER BY extractions.quality_validated_at DESC, extractions.id DESC
+    {limit_clause}
+    """, params)
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
 
 
 def mark_raw_archive_succeeded(download_id, raw_archive_uri, delete_local=False):
@@ -1002,7 +1147,11 @@ def get_processed_extractions(category=None, site=None, query=None, limit=None):
     conn = get_connection()
     cursor = conn.cursor()
 
-    filters = ["extractions.status = 'processed'", "extractions.text_uri IS NOT NULL"]
+    filters = [
+        "extractions.status = 'processed'",
+        "extractions.text_uri IS NOT NULL",
+        "COALESCE(extractions.quality_status, 'usable') != 'unusable'",
+    ]
     params = []
 
     if category:
@@ -1036,6 +1185,9 @@ def get_processed_extractions(category=None, site=None, query=None, limit=None):
         extractions.text_sha256,
         extractions.char_count,
         extractions.category,
+        extractions.quality_status,
+        extractions.quality_score,
+        extractions.quality_reason,
         downloads.id AS download_id,
         downloads.sha256 AS raw_sha256,
         files.id AS file_id,

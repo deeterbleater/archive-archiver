@@ -1,4 +1,5 @@
 import hashlib
+import gzip
 import os
 from pathlib import Path
 import re
@@ -9,11 +10,13 @@ from bs4 import BeautifulSoup
 import db
 import s3_storage
 import terminal_theme
+import text_validator
 
 
 EXTRACTOR_VERSION = "plaintext.v2"
 DEFAULT_TEXT_BUCKET_DIR = os.getenv("ARCHIVE_TEXT_BUCKET_DIR", "bucket/text")
 ARCHIVE_RAW_TO_S3 = os.getenv("ARCHIVE_RAW_TO_S3", "0").lower() in ("1", "true", "yes")
+VALIDATE_TEXT_QUALITY = os.getenv("ARCHIVE_VALIDATE_TEXT_QUALITY", "1").lower() in ("1", "true", "yes")
 STOPWORDS = {
     "about", "after", "again", "against", "also", "among", "because", "before",
     "being", "between", "could", "every", "first", "from", "have", "into",
@@ -101,6 +104,20 @@ def extract_plaintext(path, content_type=None, format_hint=None):
     suffix = path.suffix.lower()
     hint = f"{content_type or ''} {format_hint or ''}".lower()
     raw = path.read_bytes()
+
+    if suffix == ".gz" or raw.startswith(b"\x1f\x8b"):
+        try:
+            raw = gzip.decompress(raw)
+        except OSError as exc:
+            raise UnsupportedFormat(f"gzip decompression failed: {exc}") from exc
+        inner_suffix = path.with_suffix("").suffix.lower()
+        if inner_suffix in (".html", ".htm", ".xml") or "html" in hint:
+            return _extract_html(raw), "html.gz"
+        if inner_suffix in (".txt", ".text", ".md", ".json", ".csv") or "text" in hint:
+            return _normalize_text(_decode_bytes(raw)), "text.gz"
+        if raw.lstrip().startswith((b"<html", b"<!doctype html", b"<?xml")):
+            return _extract_html(raw), "html.gz"
+        return _normalize_text(_decode_bytes(raw)), "text.gz"
 
     if suffix in (".html", ".htm", ".xml") or "html" in hint:
         return _extract_html(raw), "html"
@@ -256,6 +273,20 @@ def process_pending(limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTR
         try:
             metadata = process_download(row, bucket_dir=bucket_dir, extractor=extractor)
             db.mark_extraction_succeeded(download_id=download_id, extractor=extractor, **metadata)
+            if VALIDATE_TEXT_QUALITY:
+                quality_row = dict(row)
+                quality_row.update(metadata)
+                extraction = db.get_extraction(download_id, extractor)
+                if extraction:
+                    quality_row["extraction_id"] = extraction["id"]
+                    quality = text_validator.validate_text(quality_row)
+                    db.mark_text_quality(
+                        quality_row["extraction_id"],
+                        quality["status"],
+                        score=quality.get("score"),
+                        reason=quality.get("reason"),
+                        model=quality.get("model"),
+                    )
             if ARCHIVE_RAW_TO_S3 and not row.get("raw_archive_uri"):
                 try:
                     terminal_theme.print_pip("pending", f"archive raw after extraction {download_id}")
