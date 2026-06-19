@@ -283,7 +283,11 @@ class AgentHarnessTests(unittest.TestCase):
         completed = []
 
         def fake_crawl(query, model, max_results, sources, should_stop=None):
+            cli.print(f"crawler transcript for {sources[0]}")
             completed.append((query, tuple(sources)))
+
+        visible_output = io.StringIO()
+        self.shell.stdout = visible_output
 
         with mock.patch.object(self.shell.cli, "perform_crawl", side_effect=fake_crawl):
             result = self.shell.tools.search("egoism", max_results=1, sources=["archive_org", "arxiv"])
@@ -302,6 +306,10 @@ class AgentHarnessTests(unittest.TestCase):
         statuses = {batch["label"]: batch["status"] for batch in self.shell.tools._batch_snapshot()}
         self.assertEqual(statuses["archive_org / egoism"], "complete")
         self.assertEqual(statuses["arxiv / egoism"], "complete")
+        outputs = {batch["label"]: batch["output_tail"] for batch in self.shell.tools._batch_snapshot()}
+        self.assertIn("crawler transcript for archive_org", outputs["archive_org / egoism"])
+        self.assertIn("crawler transcript for arxiv", outputs["arxiv / egoism"])
+        self.assertNotIn("crawler transcript", visible_output.getvalue())
         worker_counts = db.get_agent_worker_counts()
         self.assertEqual(worker_counts["total"], len(self.shell.config["sources"]))
         self.assertEqual(worker_counts["idle"], len(self.shell.config["sources"]))

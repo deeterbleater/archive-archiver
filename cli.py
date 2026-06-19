@@ -1,14 +1,57 @@
 import argparse
+import contextlib
+import io
 import sys
 import os
 import time
+import threading
 import urllib.parse
 from dotenv import load_dotenv
 
 # Ensure all print statements flush immediately (important for background logs)
 import builtins
+_THREAD_OUTPUT = threading.local()
+
+
+class _ThreadTeeCapture(io.StringIO):
+    def __init__(self, target=None):
+        super().__init__()
+        self.target = target
+
+    def write(self, text):
+        if self.target:
+            self.target.write(text)
+            self.target.flush()
+        return super().write(text)
+
+    def flush(self):
+        if self.target:
+            self.target.flush()
+        return super().flush()
+
+
+@contextlib.contextmanager
+def capture_output(target=None):
+    previous = getattr(_THREAD_OUTPUT, "stream", None)
+    stream = _ThreadTeeCapture(target)
+    _THREAD_OUTPUT.stream = stream
+    try:
+        yield stream
+    finally:
+        if previous is None:
+            try:
+                delattr(_THREAD_OUTPUT, "stream")
+            except AttributeError:
+                pass
+        else:
+            _THREAD_OUTPUT.stream = previous
+
+
 def print(*args, **kwargs):
     kwargs.setdefault('flush', True)
+    stream = getattr(_THREAD_OUTPUT, "stream", None)
+    if stream is not None and "file" not in kwargs:
+        kwargs["file"] = stream
     builtins.print(*args, **kwargs)
 
 # Load dotenv before module-level CLI defaults read environment variables.

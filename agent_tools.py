@@ -415,6 +415,7 @@ class AppToolRunner:
             "started_at": time.time(),
             "finished_at": None,
             "error": None,
+            "output_tail": "",
         }
         with self._batch_lock:
             self._batches[batch_id] = batch
@@ -430,7 +431,7 @@ class AppToolRunner:
             terminal_theme.print_pip("pending", f"batch {batch_id} started: {label}")
             self._log_tool_status(f"Batch {batch_id} started: {label}", phase="start")
             try:
-                target(*args, **kwargs)
+                output = target(*args, **kwargs)
             except Exception as exc:
                 error_text = f"{type(exc).__name__}: {exc}"
                 terminal_theme.print_pip("failed", f"batch {batch_id} failed: {label}: {error_text}")
@@ -453,12 +454,14 @@ class AppToolRunner:
                 )
                 return
 
+            output_tail = str(output or "")[-8000:]
             terminal_theme.print_pip("success", f"batch {batch_id} complete: {label}")
             self._log_tool_status(f"Batch {batch_id} complete: {label}", phase="end")
             with self._batch_lock:
                 self._batches[batch_id].update({
                     "status": "complete",
                     "finished_at": time.time(),
+                    "output_tail": output_tail,
                 })
                 updated = dict(self._batches[batch_id])
             db.upsert_agent_worker(
@@ -626,10 +629,23 @@ class AppToolRunner:
     def _search_source(self, query, max_results, source):
         if hasattr(self.shell, "_touch_agent_activity"):
             self.shell._touch_agent_activity(f"background search {source}")
-        terminal_theme.print_markup(
-            f"[tool]search[/tool] [muted]source[/muted] [highlight]{source}[/highlight] "
-            f"[muted]query[/muted] {query}"
-        )
+        if hasattr(self.shell.cli, "capture_output"):
+            with self.shell.cli.capture_output() as output:
+                self.shell.cli.perform_crawl(
+                    query,
+                    self.shell.config["model"],
+                    max_results,
+                    sources=[source],
+                    should_stop=getattr(self.shell, "_goal_should_stop", None),
+                )
+            transcript = output.getvalue()
+        else:
+            transcript = self._run_search_source_uncaptured(query, max_results, source)
+        if hasattr(self.shell, "_touch_agent_activity"):
+            self.shell._touch_agent_activity(f"background search {source} complete")
+        return transcript
+
+    def _run_search_source_uncaptured(self, query, max_results, source):
         self.shell.cli.perform_crawl(
             query,
             self.shell.config["model"],
@@ -637,8 +653,7 @@ class AppToolRunner:
             sources=[source],
             should_stop=getattr(self.shell, "_goal_should_stop", None),
         )
-        if hasattr(self.shell, "_touch_agent_activity"):
-            self.shell._touch_agent_activity(f"background search {source} complete")
+        return ""
 
     def search_sync(self, query, max_results=None, sources=None):
         selected_sources = sources or self.shell.config["sources"]

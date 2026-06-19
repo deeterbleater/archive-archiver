@@ -1,4 +1,5 @@
 from io import StringIO
+import threading
 
 from rich.console import Console
 from rich.errors import MarkupError
@@ -29,21 +30,24 @@ THEME = Theme({
 })
 
 console = Console(theme=THEME, highlight=False)
+_OUTPUT_LOCK = threading.RLock()
 
 
 def print_markup(text="", **kwargs):
-    try:
-        console.print(text, markup=True, **kwargs)
-    except MarkupError:
-        console.print(escape(str(text)), markup=True, **kwargs)
+    with _OUTPUT_LOCK:
+        try:
+            console.print(text, markup=True, **kwargs)
+        except MarkupError:
+            console.print(escape(str(text)), markup=True, **kwargs)
 
 
 def print_panel(text, title=None, style="pond", border_style="pond"):
-    try:
-        renderable = Text.from_markup(str(text), style=style)
-        console.print(Panel(renderable, title=title, border_style=border_style))
-    except MarkupError:
-        console.print(Panel(escape(str(text)), title=title, style=style, border_style=border_style))
+    with _OUTPUT_LOCK:
+        try:
+            renderable = Text.from_markup(str(text), style=style)
+            console.print(Panel(renderable, title=title, border_style=border_style))
+        except MarkupError:
+            console.print(Panel(escape(str(text)), title=title, style=style, border_style=border_style))
 
 
 def chat_bubble_renderable(speaker, text, border_style="pond", align="left"):
@@ -62,16 +66,19 @@ def chat_bubble_renderable(speaker, text, border_style="pond", align="left"):
 
 
 def print_chat_bubble(speaker, text, border_style="pond", align="left"):
-    console.print(chat_bubble_renderable(speaker, text, border_style=border_style, align=align))
+    with _OUTPUT_LOCK:
+        console.print(chat_bubble_renderable(speaker, text, border_style=border_style, align=align))
 
 
 def print_rule(title="", style="pond"):
-    console.print(Rule(title, style=style))
+    with _OUTPUT_LOCK:
+        console.print(Rule(title, style=style))
 
 
 def print_logo(lines):
-    for line, color in zip(lines, LOGO_GRADIENT):
-        console.print(Text(str(line).rstrip(), style=color))
+    with _OUTPUT_LOCK:
+        for line, color in zip(lines, LOGO_GRADIENT):
+            console.print(Text(str(line).rstrip(), style=color))
 
 
 def pip(status="pending"):
@@ -110,7 +117,8 @@ def tool_call_renderable(name, arguments=None):
 
 
 def print_tool_call(name, arguments=None):
-    console.print(tool_call_renderable(name, arguments))
+    with _OUTPUT_LOCK:
+        console.print(tool_call_renderable(name, arguments))
 
 
 def make_table(*columns, title=None):
