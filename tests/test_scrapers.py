@@ -141,6 +141,51 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertEqual(rows[0]["url"], "https://mirror-two.example/md5/abc123")
         self.assertEqual(len(calls), 2)
 
+    def test_annas_detail_parser_returns_download_links_not_stub_page(self):
+        html = """
+        <html>
+          <head>
+            <title>Mirror Work - Anna's Archive</title>
+            <meta name="description" content="Ada Author">
+          </head>
+          <body>
+            <div>English [en] · EPUB · 2.4MB · 2020 · Book</div>
+            <a href="/md5/abc123">Mirror Work</a>
+            <a class="js-download-link" href="/fast_download/abc123abc123abc123abc123abc123ab/0/0">Fast Partner Server #1</a>
+            <a class="js-download-link" href="/slow_download/abc123abc123abc123abc123abc123ab/0/1">Slow Partner Server #2</a>
+            <a href="/member_codes?prefix=filepath:x">Codes Explorer</a>
+          </body>
+        </html>
+        """
+
+        payload = scrapers.parse_annas_detail_page(html, "https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab")
+
+        self.assertEqual(payload["title"], "Mirror Work")
+        self.assertEqual(payload["author"], "Ada Author")
+        self.assertEqual(len(payload["files"]), 2)
+        self.assertEqual(payload["files"][0]["format"], "EPUB")
+        self.assertEqual(payload["files"][0]["file_size"], "2.4MB")
+        self.assertIn("/fast_download/", payload["files"][0]["download_url"])
+        self.assertNotIn("/md5/", payload["files"][0]["download_url"])
+        self.assertEqual(payload["files"][0]["trust_level"], "untrusted")
+
+    def test_annas_file_filter_drops_page_links(self):
+        rows = [
+            {"format": "PDF", "download_url": "https://annas-archive.gl/md5/abc"},
+            {"format": "PDF", "download_url": "https://annas-archive.gl/member_codes?prefix=x"},
+            {"format": "PDF", "download_url": "https://annas-archive.gl/fast_download/abc123abc123abc123abc123abc123ab/0/0?short=1"},
+            {"format": "EPUB", "download_url": "https://example.org/work.epub"},
+        ]
+
+        filtered = scrapers.filter_annas_download_files(rows)
+
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(
+            filtered[0]["download_url"],
+            "https://annas-archive.gl/fast_download/abc123abc123abc123abc123abc123ab/0/0",
+        )
+        self.assertEqual(filtered[1]["download_url"], "https://example.org/work.epub")
+
     def test_select_best_file_prefers_plaintext_over_heavier_formats(self):
         rows = [
             {

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import urllib.parse
 
 import file_selection
 
@@ -74,9 +75,81 @@ def _ensure_column(cursor, table, column, definition):
         cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _ensure_text_search_tables(cursor):
+    cursor.execute("""
+    CREATE VIRTUAL TABLE IF NOT EXISTS text_search_index USING fts5(
+        title,
+        author,
+        search_query,
+        category,
+        site,
+        body,
+        tokenize = 'unicode61 remove_diacritics 2'
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS text_search_meta (
+        extraction_id INTEGER PRIMARY KEY,
+        text_sha256 TEXT,
+        body_chars INTEGER NOT NULL DEFAULT 0,
+        indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (extraction_id) REFERENCES extractions(id) ON DELETE CASCADE
+    )
+    """)
+
+
 def _category_name(value):
     name = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
     return name or "uncategorized"
+
+
+def _read_local_text_uri(uri):
+    parsed = urllib.parse.urlparse(uri or "")
+    if parsed.scheme != "file":
+        raise ValueError("text search can only index local file:// text artifacts")
+    path = Path(urllib.parse.unquote(parsed.path))
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(str(path))
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _fts_escape(value):
+    return str(value or "").replace('"', '""')
+
+
+def _fts_terms(value):
+    return re.findall(r"[\w]+", str(value or ""), flags=re.UNICODE)
+
+
+def build_text_search_query(query, mode="auto"):
+    """Builds a safe FTS5 MATCH expression for common viewer search modes."""
+    query = str(query or "").strip()
+    if not query:
+        raise ValueError("search query is required")
+    mode = str(mode or "auto").lower()
+
+    if mode == "match":
+        return query
+    if mode == "phrase":
+        return f'"{_fts_escape(query)}"'
+
+    phrases = re.findall(r'"([^"]+)"', query)
+    without_phrases = re.sub(r'"[^"]+"', " ", query)
+    parts = [f'"{_fts_escape(phrase)}"' for phrase in phrases if phrase.strip()]
+    parts.extend(_fts_terms(without_phrases))
+    if not parts:
+        parts = _fts_terms(query)
+    if not parts:
+        raise ValueError("search query does not contain searchable terms")
+
+    operator = " OR " if mode == "any" else " AND "
+    return operator.join(parts)
+
+
+def _delete_text_search_row(cursor, extraction_id):
+    _ensure_text_search_tables(cursor)
+    cursor.execute("DELETE FROM text_search_index WHERE rowid = ?", (extraction_id,))
+    cursor.execute("DELETE FROM text_search_meta WHERE extraction_id = ?", (extraction_id,))
 
 
 def _wordlist():
@@ -320,6 +393,8 @@ def init_db():
         FOREIGN KEY (work_id) REFERENCES works (id) ON DELETE RESTRICT
     )
     """)
+
+    _ensure_text_search_tables(cursor)
 
     cursor.execute("""
     INSERT OR IGNORE INTO schema_migrations(version)
@@ -939,8 +1014,15 @@ def mark_extraction_succeeded(download_id, extractor, text_uri, text_sha256, cha
         processed_at = CURRENT_TIMESTAMP
     WHERE download_id = ? AND extractor = ?
     """, (text_uri, text_sha256, char_count, category, warnings, download_id, extractor))
+    cursor.execute("SELECT id FROM extractions WHERE download_id = ? AND extractor = ?", (download_id, extractor))
+    row = cursor.fetchone()
     conn.commit()
     conn.close()
+    if row:
+        try:
+            sync_text_search_index(extraction_id=row[0])
+        except Exception:
+            pass
 
 
 def get_extraction(download_id, extractor):
@@ -967,6 +1049,10 @@ def mark_extraction_skipped(download_id, extractor, reason):
         processed_at = CURRENT_TIMESTAMP
     WHERE download_id = ? AND extractor = ?
     """, (str(reason)[:1000], download_id, extractor))
+    cursor.execute("SELECT id FROM extractions WHERE download_id = ? AND extractor = ?", (download_id, extractor))
+    row = cursor.fetchone()
+    if row:
+        _delete_text_search_row(cursor, row[0])
     conn.commit()
     conn.close()
 
@@ -982,6 +1068,10 @@ def mark_extraction_failed(download_id, extractor, error):
         updated_at = CURRENT_TIMESTAMP
     WHERE download_id = ? AND extractor = ?
     """, (str(error)[:1000], download_id, extractor))
+    cursor.execute("SELECT id FROM extractions WHERE download_id = ? AND extractor = ?", (download_id, extractor))
+    row = cursor.fetchone()
+    if row:
+        _delete_text_search_row(cursor, row[0])
     conn.commit()
     conn.close()
 
@@ -1007,8 +1097,15 @@ def mark_text_quality(extraction_id, status, score=None, reason=None, model=None
         model,
         extraction_id,
     ))
+    if str(status) == "unusable":
+        _delete_text_search_row(cursor, extraction_id)
     conn.commit()
     conn.close()
+    if str(status) != "unusable":
+        try:
+            sync_text_search_index(extraction_id=extraction_id)
+        except Exception:
+            pass
 
 
 def reject_text_extraction(extraction_id, reason=None):
@@ -1030,6 +1127,7 @@ def reject_text_extraction(extraction_id, reason=None):
         processed_at = COALESCE(processed_at, CURRENT_TIMESTAMP)
     WHERE id = ?
     """, (str(reason or "rejected by text quality validation")[:1000], extraction_id))
+    _delete_text_search_row(cursor, extraction_id)
     conn.commit()
     conn.close()
     return dict(row) if row else None
@@ -1108,6 +1206,239 @@ def get_unusable_text_extractions(limit=None):
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
+
+
+def sync_text_search_index(extraction_id=None, limit=None):
+    """Refreshes the FTS index for processed, usable local text artifacts."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    _ensure_text_search_tables(cursor)
+
+    filters = [
+        "extractions.status = 'processed'",
+        "extractions.text_uri IS NOT NULL",
+        "COALESCE(extractions.quality_status, 'usable') != 'unusable'",
+    ]
+    params = []
+    if extraction_id is not None:
+        filters.append("extractions.id = ?")
+        params.append(extraction_id)
+
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(max(1, int(limit)))
+
+    cursor.execute(f"""
+    SELECT
+        extractions.id AS extraction_id,
+        extractions.text_uri,
+        extractions.text_sha256,
+        extractions.category,
+        files.site,
+        works.title,
+        works.author,
+        works.search_query,
+        text_search_meta.text_sha256 AS indexed_sha256
+    FROM extractions
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    LEFT JOIN text_search_meta ON text_search_meta.extraction_id = extractions.id
+    WHERE {" AND ".join(filters)}
+      AND (
+          text_search_meta.extraction_id IS NULL
+          OR COALESCE(text_search_meta.text_sha256, '') != COALESCE(extractions.text_sha256, '')
+      )
+    ORDER BY extractions.updated_at DESC, extractions.id DESC
+    {limit_clause}
+    """, params)
+    rows = [dict(row) for row in cursor.fetchall()]
+
+    indexed = 0
+    failed = 0
+    for row in rows:
+        try:
+            body = _read_local_text_uri(row["text_uri"])
+        except (OSError, ValueError):
+            failed += 1
+            _delete_text_search_row(cursor, row["extraction_id"])
+            continue
+
+        _delete_text_search_row(cursor, row["extraction_id"])
+        cursor.execute("""
+        INSERT INTO text_search_index (
+            rowid,
+            title,
+            author,
+            search_query,
+            category,
+            site,
+            body
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            row["extraction_id"],
+            row.get("title") or "",
+            row.get("author") or "",
+            row.get("search_query") or "",
+            row.get("category") or "",
+            row.get("site") or "",
+            body,
+        ))
+        cursor.execute("""
+        INSERT INTO text_search_meta (extraction_id, text_sha256, body_chars, indexed_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(extraction_id) DO UPDATE SET
+            text_sha256 = excluded.text_sha256,
+            body_chars = excluded.body_chars,
+            indexed_at = CURRENT_TIMESTAMP
+        """, (row["extraction_id"], row.get("text_sha256"), len(body)))
+        indexed += 1
+
+    if extraction_id is None:
+        cursor.execute("""
+        SELECT text_search_meta.extraction_id
+        FROM text_search_meta
+        LEFT JOIN extractions ON extractions.id = text_search_meta.extraction_id
+        WHERE extractions.id IS NULL
+           OR extractions.status != 'processed'
+           OR extractions.text_uri IS NULL
+           OR COALESCE(extractions.quality_status, 'usable') = 'unusable'
+        """)
+        stale_ids = [row[0] for row in cursor.fetchall()]
+        for stale_id in stale_ids:
+            _delete_text_search_row(cursor, stale_id)
+    else:
+        cursor.execute("""
+        SELECT 1
+        FROM extractions
+        WHERE id = ?
+          AND status = 'processed'
+          AND text_uri IS NOT NULL
+          AND COALESCE(quality_status, 'usable') != 'unusable'
+        """, (extraction_id,))
+        if cursor.fetchone() is None:
+            _delete_text_search_row(cursor, extraction_id)
+
+    conn.commit()
+    conn.close()
+    return {"indexed": indexed, "failed": failed, "checked": len(rows)}
+
+
+def search_texts(
+    query,
+    site=None,
+    category=None,
+    quality=None,
+    status="processed",
+    mode="auto",
+    limit=50,
+    offset=0,
+    sync_limit=None,
+):
+    """Search extracted plaintext with FTS5 BM25 ranking and highlighted snippets."""
+    match_query = build_text_search_query(query, mode=mode)
+    sync_text_search_index(limit=sync_limit)
+
+    limit = max(1, min(int(limit or 50), 500))
+    offset = max(0, int(offset or 0))
+    filters = ["text_search_index MATCH ?"]
+    params = [match_query]
+
+    if status:
+        filters.append("COALESCE(extractions.status, 'pending') = ?")
+        params.append(status)
+    if site:
+        filters.append("files.site = ?")
+        params.append(site)
+    if category:
+        filters.append("COALESCE(extractions.category, 'uncategorized') = ?")
+        params.append(category)
+    if quality:
+        filters.append("COALESCE(extractions.quality_status, 'unvalidated') = ?")
+        params.append(quality)
+    else:
+        filters.append("COALESCE(extractions.quality_status, 'usable') != 'unusable'")
+
+    where = " AND ".join(filters)
+    conn = get_connection()
+    cursor = conn.cursor()
+    _ensure_text_search_tables(cursor)
+
+    count_sql = f"""
+    SELECT COUNT(*)
+    FROM text_search_index
+    JOIN extractions ON extractions.id = text_search_index.rowid
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE {where}
+    """
+    cursor.execute(count_sql, params)
+    total = cursor.fetchone()[0]
+
+    cursor.execute(f"""
+    SELECT
+        extractions.id AS extraction_id,
+        extractions.download_id,
+        extractions.extractor,
+        extractions.status,
+        extractions.category,
+        extractions.char_count,
+        extractions.text_sha256,
+        extractions.text_uri,
+        extractions.warnings,
+        extractions.error,
+        COALESCE(extractions.quality_status, 'unvalidated') AS quality_status,
+        extractions.quality_score,
+        extractions.quality_reason,
+        extractions.quality_model,
+        extractions.quality_validated_at,
+        extractions.updated_at,
+        extractions.processed_at,
+        downloads.bytes,
+        downloads.http_status,
+        COALESCE(downloads.scan_status, 'unscanned') AS scan_status,
+        downloads.scan_engine,
+        downloads.scan_signature,
+        downloads.raw_archive_status,
+        downloads.raw_archive_uri,
+        downloads.local_raw_deleted_at,
+        files.id AS file_id,
+        files.work_id,
+        files.site,
+        files.format,
+        files.file_size,
+        files.url,
+        files.download_url,
+        files.trust_level,
+        works.title,
+        works.author,
+        works.search_query,
+        bm25(text_search_index, 8.0, 5.0, 3.0, 4.0, 2.0, 1.0) AS rank,
+        snippet(text_search_index, 0, '<mark>', '</mark>', ' ... ', 8) AS title_snippet,
+        snippet(text_search_index, 5, '<mark>', '</mark>', ' ... ', 32) AS body_snippet
+    FROM text_search_index
+    JOIN extractions ON extractions.id = text_search_index.rowid
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE {where}
+    ORDER BY rank ASC, extractions.updated_at DESC, extractions.id DESC
+    LIMIT ? OFFSET ?
+    """, params + [limit, offset])
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return {
+        "query": query,
+        "match_query": match_query,
+        "mode": mode,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "results": rows,
+    }
 
 
 def mark_raw_archive_succeeded(download_id, raw_archive_uri, delete_local=False):

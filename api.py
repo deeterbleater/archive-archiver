@@ -691,6 +691,34 @@ def list_texts(
     """, params)
 
 
+@app.get("/texts/search")
+def search_texts(
+    q: str = Query(..., min_length=1),
+    site: Optional[str] = None,
+    category: Optional[str] = None,
+    quality: Optional[str] = None,
+    status: str = "processed",
+    mode: str = Query("auto", pattern="^(auto|all|any|phrase|match)$"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    try:
+        return db.search_texts(
+            q,
+            site=site,
+            category=category,
+            quality=quality,
+            status=status,
+            mode=mode,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid full-text search query: {exc}") from exc
+
+
 @app.get("/texts/{extraction_id}")
 def get_text(
     extraction_id: int,

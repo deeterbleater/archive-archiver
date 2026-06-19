@@ -67,6 +67,26 @@ def download_domain(file_row):
     return parsed.netloc.lower() or _safe_segment(file_row.get("site"))
 
 
+def _is_annas_archive_file(file_row, url):
+    site = str(file_row.get("site") or "").lower()
+    parsed = urllib.parse.urlparse(str(url or ""))
+    return "annas-archive" in site or "annas-archive." in parsed.netloc
+
+
+def _reject_annas_stub_response(file_row, request_url, final_url, content_type):
+    if not _is_annas_archive_file(file_row, request_url) and not _is_annas_archive_file(file_row, final_url):
+        return
+    parsed_request = urllib.parse.urlparse(str(request_url or ""))
+    parsed_final = urllib.parse.urlparse(str(final_url or ""))
+    bad_paths = ("/md5/", "/view", "/search", "/datasets", "/torrents", "/member_codes", "/fast_download_not_member")
+    if any((parsed_request.path or "").startswith(path) for path in bad_paths):
+        raise ValueError(f"refusing Anna's Archive page URL as file download: {request_url}")
+    if any((parsed_final.path or "").startswith(path) for path in bad_paths):
+        raise ValueError(f"Anna's Archive returned a page/gate instead of a file: {final_url}")
+    if "text/html" in str(content_type or "").lower():
+        raise ValueError(f"Anna's Archive returned HTML instead of a book file: {final_url}")
+
+
 class HostRateLimiter:
     def __init__(self, requests_per_second=0.2, jitter_seconds=0.5):
         if requests_per_second <= 0:
@@ -148,6 +168,7 @@ def download_file(
                 raise requests.HTTPError(f"HTTP {status_code}", response=response)
 
             content_type = response.headers.get("Content-Type")
+            _reject_annas_stub_response(file_row, url, response.url, content_type)
             sha256, byte_count = _stream_to_temp_file(response, temp_path, max_bytes)
             extension = _extension_from_response(response.url, content_type, file_row.get("format"))
             storage_key = _object_key(file_row, sha256, extension)

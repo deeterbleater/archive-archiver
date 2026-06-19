@@ -34,6 +34,12 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
 ]
 
+ANNA_DOWNLOAD_PATH_RE = re.compile(r"^/(?:fast|slow)_download/[0-9a-f]{32}/", re.IGNORECASE)
+ANNA_STUB_PATH_RE = re.compile(
+    r"^/(?:md5|view|search|datasets|torrents|member_codes|fast_download_not_member)(?:/|$)",
+    re.IGNORECASE,
+)
+
 def get_headers():
     return {
         "User-Agent": random.choice(USER_AGENTS),
@@ -181,6 +187,109 @@ def get_archive_org_files(identifier):
 
 def select_best_file(rows):
     return file_selection.select_best_file(rows)
+
+
+def is_annas_archive_url(value):
+    parsed = urllib.parse.urlparse(str(value or ""))
+    host = parsed.netloc or str(value or "")
+    return "annas-archive." in host
+
+
+def is_annas_archive_stub_url(value):
+    parsed = urllib.parse.urlparse(str(value or ""))
+    if not is_annas_archive_url(value):
+        return False
+    return bool(ANNA_STUB_PATH_RE.match(parsed.path or ""))
+
+
+def filter_annas_download_files(files):
+    """Keeps concrete Anna download links and drops detail/member/navigation pages."""
+    filtered = []
+    for item in files or []:
+        download_url = str(item.get("download_url") or item.get("url") or "")
+        parsed = urllib.parse.urlparse(download_url)
+        if is_annas_archive_url(download_url):
+            if not ANNA_DOWNLOAD_PATH_RE.match(parsed.path or ""):
+                continue
+            if parsed.query:
+                clean_url = urllib.parse.urlunparse(parsed._replace(query="", fragment=""))
+                item = {**item, "download_url": clean_url}
+        filtered.append(item)
+    return filtered
+
+
+def _annas_detail_title(soup):
+    if soup.title and soup.title.string:
+        title = re.sub(r"\s*-\s*Anna(?:'|.)s Archive\s*$", "", soup.title.string)
+        title = re.sub(r"\s+", " ", title).strip(" -")
+        if title and not re.fullmatch(r"anna.?s archive", title.lower()):
+            return title
+    for div in soup.find_all("div"):
+        text = re.sub(r"\s+", " ", div.get_text(" ", strip=True)).strip()
+        if 8 <= len(text) <= 300 and "search" not in text.lower():
+            return re.sub(r"[^\w\s:;,.!?()\\[\\]{}'\"-]+$", "", text).strip()
+    return "Anna's Archive work"
+
+
+def _annas_detail_author(soup):
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content"):
+        first_line = re.sub(r"\s+", " ", meta["content"]).strip()
+        if first_line:
+            return first_line[:240]
+    return None
+
+
+def _annas_detail_format_size(soup):
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    match = re.search(
+        r"(?:^|\s)·\s*([A-Za-z0-9]{2,8})\s*·\s*([0-9][0-9.,]*\s*(?:KB|MB|GB))\s*·",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).upper(), match.group(2).replace(" ", "")
+    match = re.search(r"\b(PDF|EPUB|MOBI|AZW3|DJVU|TXT|RTF)\b", text, re.IGNORECASE)
+    return (match.group(1).upper() if match else "Unknown"), "Unknown"
+
+
+def parse_annas_detail_page(html, detail_url):
+    """Extracts concrete Anna download candidates from an /md5 detail page."""
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    title = _annas_detail_title(soup)
+    author = _annas_detail_author(soup)
+    fmt, file_size = _annas_detail_format_size(soup)
+    files = []
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        full_url = urllib.parse.urljoin(detail_url, href)
+        parsed = urllib.parse.urlparse(full_url)
+        if not is_annas_archive_url(full_url):
+            continue
+        if not ANNA_DOWNLOAD_PATH_RE.match(parsed.path or ""):
+            continue
+        full_url = urllib.parse.urlunparse(parsed._replace(query="", fragment=""))
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        label = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip() or "Anna's Archive download"
+        files.append({
+            "site": "annas-archive.org",
+            "title": title,
+            "author": author,
+            "format": fmt,
+            "url": detail_url,
+            "file_size": file_size,
+            "download_source": f"Anna's Archive {label}",
+            "download_url": full_url,
+            "trust_level": "untrusted",
+        })
+    if not files:
+        return None
+    return {"title": title, "author": author, "files": files}
 
 
 def search_arxiv(query, max_results=10):

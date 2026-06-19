@@ -332,6 +332,37 @@ class PipelineStateTests(unittest.TestCase):
 
         self.assertEqual(downloader.download_domain(row), "cdn.example")
 
+    def test_downloader_rejects_annas_archive_html_stub(self):
+        class FakeResponse:
+            status_code = 200
+            url = "https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab"
+            headers = {"Content-Type": "text/html; charset=utf-8"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_content(self, chunk_size=1):
+                yield b"<html>Anna's Archive page</html>"
+
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "annas-archive.org",
+            "format": "PDF",
+            "download_url": "https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab",
+        }
+
+        with mock.patch("downloader.requests.get", return_value=FakeResponse()):
+            with self.assertRaisesRegex(ValueError, "Anna's Archive page URL"):
+                downloader.download_file(
+                    row,
+                    bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                    quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                )
+
     def test_domain_workers_process_one_queue_per_domain(self):
         alpha_work_id = db.add_work(title="Alpha Domain Fixture", author="Test Author", search_query="domains")
         db.add_file(

@@ -62,6 +62,42 @@ class ApiTests(unittest.TestCase):
         )
         return work_id
 
+    def _add_text_fixture(self, title, text, category="philosophy", site="example.org"):
+        text_path = Path(self.tempdir.name) / f"{title.lower().replace(' ', '-')}.txt"
+        text_path.write_text(text, encoding="utf-8")
+        work_id = db.add_work(title, "Test Author", "viewer search")
+        db.add_file(
+            work_id=work_id,
+            site=site,
+            format="Text",
+            url=f"https://{site}/{title}",
+            file_size=f"{len(text)} bytes",
+            download_source="fixture",
+            download_url=f"https://{site}/{title}.txt",
+        )
+        file_id = db.get_pending_download_files(limit=10)[-1]["id"]
+        db.mark_download_started(file_id)
+        db.mark_download_succeeded(
+            file_id=file_id,
+            bucket_uri=text_path.resolve().as_uri(),
+            storage_key=text_path.name,
+            sha256=f"raw-{title}",
+            byte_count=len(text.encode("utf-8")),
+            content_type="text/plain",
+            http_status=200,
+        )
+        download_id = db.get_pending_extractions(limit=10, extractor="plaintext.v2")[-1]["id"]
+        db.mark_extraction_started(download_id, "plaintext.v2")
+        db.mark_extraction_succeeded(
+            download_id=download_id,
+            extractor="plaintext.v2",
+            text_uri=text_path.resolve().as_uri(),
+            text_sha256=f"text-{title}",
+            char_count=len(text),
+            category=category,
+        )
+        return db.get_extraction(download_id, "plaintext.v2")["id"]
+
     def test_summary_and_breakdowns(self):
         self._add_fixture()
 
@@ -197,6 +233,63 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["text"], "First line o")
         self.assertTrue(payload["truncated"])
         self.assertEqual(payload["preview_chars"], 12)
+
+    def test_text_search_endpoint_uses_full_text_index_and_snippets(self):
+        self._add_text_fixture(
+            "Occult Search Fixture",
+            "This archive body discusses Thelema, ritual practice, and ceremonial magick.",
+            category="occult",
+        )
+        self._add_text_fixture(
+            "Political Search Fixture",
+            "This archive body discusses unions, labor, and mutual aid.",
+            category="anarchism",
+        )
+
+        payload = self.api.search_texts(q="Thelema ritual", mode="all", limit=10, offset=0)
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["results"][0]["title"], "Occult Search Fixture")
+        self.assertEqual(payload["results"][0]["category"], "occult")
+        self.assertIn("<mark>", payload["results"][0]["body_snippet"])
+        self.assertIn("rank", payload["results"][0])
+
+    def test_new_processed_text_is_indexed_immediately(self):
+        extraction_id = self._add_text_fixture(
+            "Fresh Index Fixture",
+            "A brand new work about lodestar indexing should be searchable immediately.",
+        )
+
+        with db.get_connection() as conn:
+            meta = conn.execute(
+                "SELECT extraction_id, body_chars FROM text_search_meta WHERE extraction_id = ?",
+                (extraction_id,),
+            ).fetchone()
+            match = conn.execute(
+                "SELECT rowid FROM text_search_index WHERE text_search_index MATCH ?",
+                ("lodestar",),
+            ).fetchone()
+
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta["extraction_id"], extraction_id)
+        self.assertGreater(meta["body_chars"], 0)
+        self.assertEqual(match["rowid"], extraction_id)
+
+    def test_text_search_endpoint_supports_phrase_mode(self):
+        self._add_text_fixture("Phrase Fixture", "A precise phrase about golden dawn ritual survives here.")
+
+        payload = self.api.search_texts(q="golden dawn", mode="phrase", limit=10, offset=0)
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["results"][0]["title"], "Phrase Fixture")
+
+    def test_text_search_excludes_unusable_texts(self):
+        extraction_id = self._add_text_fixture("Rejected Fixture", "Unreadable marker should disappear from search.")
+        db.mark_text_quality(extraction_id, "unusable", score=0.1, reason="bad", model="fixture")
+
+        payload = self.api.search_texts(q="Unreadable marker", mode="all", limit=10, offset=0)
+
+        self.assertEqual(payload["total"], 0)
 
     def test_summary_counts_rejected_text_validation(self):
         self._add_fixture()

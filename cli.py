@@ -119,6 +119,10 @@ def _add_best_file(work_id, files, base_url, site, default_source, trust_level="
         print("      [=] Work already has archive activity; skipping duplicate download candidate.")
         return None
 
+    if scrapers.is_annas_archive_url(base_url) or scrapers.is_annas_archive_url(site):
+        files = scrapers.filter_annas_download_files(files)
+        trust_level = "untrusted"
+
     best = scrapers.select_best_file(files)
     if not best:
         return None
@@ -248,16 +252,20 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
             if not html:
                 print("      [!] Failed to fetch content.")
                 continue
-                
-            cleaned = scrapers.clean_html(html)
-            print("      [*] Analyzing page with OpenRouter LLM...")
-            try:
-                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-            except ValueError as ve:
-                print(f"      [!] LLM skipped: {ve}")
-                parsed_data = None
+
+            parsed_data = scrapers.parse_annas_detail_page(html, url)
+            if parsed_data:
+                print("      [+] Parsed Anna's Archive download links deterministically.")
             else:
-                print("      [+] OpenRouter analysis returned.")
+                cleaned = scrapers.clean_html(html)
+                print("      [*] Analyzing page with OpenRouter LLM...")
+                try:
+                    parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+                except ValueError as ve:
+                    print(f"      [!] LLM skipped: {ve}")
+                    parsed_data = None
+                else:
+                    print("      [+] OpenRouter analysis returned.")
             
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -317,6 +325,7 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                     url,
                     "annas-archive.org",
                     "Anna's Archive Mirror",
+                    trust_level="untrusted",
                 )
                 if best:
                     print(f"      [+] Logged work: '{title}' with preferred [{best.get('format')}] version.")

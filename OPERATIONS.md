@@ -165,6 +165,7 @@ The API returns plain JSON and is organized around dashboard needs:
 - time series for line charts
 - recent activity feeds
 - paginated drilldown tables for works and files
+- full-text search for the text review browser
 
 The service has permissive CORS by default:
 
@@ -204,8 +205,12 @@ Drilldown:
 GET /works?limit=50&offset=0
 GET /works/{work_id}
 GET /files?site=archive.org&limit=50
+GET /texts/search?q=thelema&mode=auto&limit=50
 GET /corpora
 ```
+
+For the full text search contract, search modes, response shape, and index
+maintenance notes, see `TEXT_SEARCH_ENDPOINT.md`.
 
 Dashboard integration notes:
 
