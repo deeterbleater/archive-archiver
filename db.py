@@ -859,6 +859,82 @@ def get_pending_download_files(limit=10):
     ]
     return [row for row in rows if row][:limit]
 
+
+def get_pending_download_files_for_work_ids(work_ids, limit=10):
+    """Returns one preferred pending file per requested work with no prior download attempt."""
+    work_ids = [int(work_id) for work_id in work_ids if work_id is not None]
+    if not work_ids or limit <= 0:
+        return []
+
+    placeholders = ",".join("?" for _ in work_ids)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(f"""
+    SELECT
+        files.*,
+        works.title,
+        works.author,
+        downloads.status AS download_status,
+        downloads.attempts AS download_attempts
+    FROM files
+    JOIN works ON works.id = files.work_id
+    LEFT JOIN downloads ON downloads.file_id = files.id
+    WHERE
+        files.work_id IN ({placeholders})
+        AND COALESCE(files.download_url, files.url, '') <> ''
+        AND downloads.id IS NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM files sibling_files
+            JOIN downloads sibling_downloads
+              ON sibling_downloads.file_id = sibling_files.id
+            LEFT JOIN extractions sibling_extractions
+              ON sibling_extractions.download_id = sibling_downloads.id
+            WHERE sibling_files.work_id = files.work_id
+              AND (
+                  sibling_downloads.status IN ('pending', 'downloading')
+                  OR (
+                      sibling_downloads.status = 'downloaded'
+                      AND (
+                          sibling_extractions.id IS NULL
+                          OR (
+                              sibling_extractions.status IN ('pending', 'processing', 'processed')
+                              AND COALESCE(sibling_extractions.quality_status, 'usable') != 'unusable'
+                          )
+                      )
+                  )
+              )
+        )
+    ORDER BY files.work_id ASC, files.id ASC
+    """, work_ids)
+
+    candidates = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    by_work = {}
+    for row in candidates:
+        by_work.setdefault(row["work_id"], []).append(row)
+    rows = [
+        file_selection.select_best_file(work_rows)
+        for _work_id, work_rows in sorted(by_work.items())
+    ]
+    return [row for row in rows if row][:limit]
+
+
+def get_work_ids_for_search_queries(queries):
+    queries = [str(query) for query in queries if query]
+    if not queries:
+        return []
+    placeholders = ",".join("?" for _ in queries)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT id FROM works WHERE search_query IN ({placeholders}) ORDER BY id ASC",
+        queries,
+    )
+    work_ids = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return work_ids
+
 def mark_download_started(file_id):
     """Creates or updates the download row when a worker starts a file."""
     conn = get_connection()
@@ -982,6 +1058,43 @@ def get_pending_extractions(limit=10, extractor="plaintext.v1"):
     ORDER BY downloads.id ASC
     LIMIT ?
     """, (extractor, limit))
+
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_pending_extractions_for_work_ids(work_ids, limit=10, extractor="plaintext.v1"):
+    work_ids = [int(work_id) for work_id in work_ids if work_id is not None]
+    if not work_ids or limit <= 0:
+        return []
+    placeholders = ",".join("?" for _ in work_ids)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(f"""
+    SELECT
+        downloads.*,
+        files.work_id,
+        files.site,
+        files.format,
+        files.url,
+        files.download_url,
+        works.title,
+        works.author,
+        extractions.status AS extraction_status
+    FROM downloads
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    LEFT JOIN extractions
+      ON extractions.download_id = downloads.id
+     AND extractions.extractor = ?
+    WHERE
+        files.work_id IN ({placeholders})
+        AND downloads.status = 'downloaded'
+        AND extractions.id IS NULL
+    ORDER BY downloads.id ASC
+    LIMIT ?
+    """, [extractor, *work_ids, limit])
 
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()

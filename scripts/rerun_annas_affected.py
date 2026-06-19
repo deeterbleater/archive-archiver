@@ -9,6 +9,7 @@ and optionally archive raw originals.
 """
 
 import argparse
+import difflib
 import os
 from pathlib import Path
 import re
@@ -21,9 +22,33 @@ import urllib.parse
 
 
 REPO_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_DIR))
+
+import db
+import downloader
+import processor
+
 DB_FILE = REPO_DIR / "archive_works.db"
 ALGE = REPO_DIR / "bin" / "alge"
 DEFAULT_SOURCES = ("annas_archive", "libgen", "archive_org")
+TITLE_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "book",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "vol",
+    "volume",
+    "with",
+}
 
 
 def _is_page_path(url):
@@ -47,6 +72,47 @@ def _connect(db_file):
 
 def _normalize_match_text(value):
     return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _significant_title_tokens(value):
+    return {
+        token
+        for token in _normalize_match_text(value).split()
+        if len(token) > 2 and token not in TITLE_STOPWORDS
+    }
+
+
+def _authors_compatible(left, right):
+    left_key = _normalize_match_text(left)
+    right_key = _normalize_match_text(right)
+    if not left_key or not right_key:
+        return False
+    return left_key in right_key or right_key in left_key
+
+
+def _titles_compatible(left, right, authors_match=False):
+    left_key = _normalize_match_text(left)
+    right_key = _normalize_match_text(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    if len(left_key) >= 12 and len(right_key) >= 12 and (left_key in right_key or right_key in left_key):
+        return True
+
+    ratio = difflib.SequenceMatcher(None, left_key, right_key).ratio()
+    if ratio >= 0.90:
+        return True
+
+    left_tokens = _significant_title_tokens(left)
+    right_tokens = _significant_title_tokens(right)
+    if not left_tokens or not right_tokens:
+        return False
+    smaller = left_tokens if len(left_tokens) <= len(right_tokens) else right_tokens
+    overlap = len(left_tokens & right_tokens)
+    if authors_match and overlap >= 2 and overlap / len(smaller) >= 0.85:
+        return True
+    return overlap >= 3 and overlap / len(smaller) >= 1.0
 
 
 def affected_works(db_file=DB_FILE, include_resolved=False, limit=None, start_after_work_id=None):
@@ -135,13 +201,12 @@ def matching_work_has_usable_text(conn, item):
     """, (item["work_id"],)).fetchall()
 
     for row in rows:
-        candidate_title = _normalize_match_text(row["title"])
-        if title_key != candidate_title:
+        authors_match = _authors_compatible(item.get("author"), row["author"])
+        if not _titles_compatible(item.get("title"), row["title"], authors_match=authors_match):
             continue
-        if not author_key:
-            return True
         candidate_author = _normalize_match_text(row["author"])
-        if not candidate_author or author_key in candidate_author or candidate_author in author_key:
+        candidate_title = _normalize_match_text(row["title"])
+        if not author_key or authors_match or (not candidate_author and title_key == candidate_title):
             return True
     return False
 
@@ -159,7 +224,9 @@ def batched(items, size):
         yield items[index:index + size]
 
 
-def alge_command(args, queries_file):
+def alge_command(args, queries_file, download_limit=None, process_limit=None):
+    download_limit = args.download_limit if download_limit is None else download_limit
+    process_limit = args.process_limit if process_limit is None else process_limit
     parts = [
         "/cycle",
         "--queries-file",
@@ -169,9 +236,9 @@ def alge_command(args, queries_file):
         "--max-results",
         str(args.max_results),
         "--download-limit",
-        str(args.download_limit),
+        str(download_limit),
         "--process-limit",
-        str(args.process_limit),
+        str(process_limit),
         "--rps",
         str(args.rps),
         "--max-mb",
@@ -230,6 +297,39 @@ def write_queries(batch):
     return Path(handle.name)
 
 
+def run_targeted_workflow(args, batch):
+    queries = [query_for_work(row) for row in batch if query_for_work(row)]
+    work_ids = set(db.get_work_ids_for_search_queries(queries))
+    work_ids.update(row["work_id"] for row in batch)
+    if not work_ids:
+        print("targeted workflow: no matching works discovered", flush=True)
+        return 0
+
+    max_bytes = args.max_mb * 1024 * 1024 if args.max_mb else None
+    download_results = downloader.download_work_ids_by_domain(
+        sorted(work_ids),
+        limit=args.download_limit,
+        bucket_dir=downloader.DEFAULT_RAW_BUCKET_DIR,
+        requests_per_second=args.rps,
+        max_bytes=max_bytes,
+        max_domains=args.max_domains,
+        per_domain_limit=args.per_domain_limit,
+        quarantine_dir=downloader.DEFAULT_QUARANTINE_BUCKET_DIR,
+    )
+    process_results = processor.process_pending_for_work_ids(
+        sorted(work_ids),
+        limit=args.process_limit,
+        extractor=processor.EXTRACTOR_VERSION,
+    )
+
+    print("\n============= TARGETED REPAIR SUMMARY ===========")
+    print(f"work_ids: {len(work_ids)}")
+    print(f"downloads: {download_results}")
+    print(f"processing: {process_results}")
+    print("=================================================", flush=True)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Use ALGE to rerun Anna's Archive HTML-stub affected works.",
@@ -254,6 +354,8 @@ def main():
     parser.add_argument("--no-archive-raw", action="store_true")
     parser.add_argument("--archive-raw-limit", type=int, default=25)
     parser.add_argument("--keep-query-files", action="store_true")
+    parser.add_argument("--global-queue", action="store_false", dest="targeted_workflow")
+    parser.set_defaults(targeted_workflow=True)
     args = parser.parse_args()
 
     works = affected_works(
@@ -274,10 +376,25 @@ def main():
             print(f"  - #{row['work_id']} {query_for_work(row)}", flush=True)
 
         try:
-            code = run_alge(alge_command(args, query_file), dry_run=args.dry_run)
+            cycle_download_limit = 0 if args.targeted_workflow else None
+            cycle_process_limit = 0 if args.targeted_workflow else None
+            code = run_alge(
+                alge_command(
+                    args,
+                    query_file,
+                    download_limit=cycle_download_limit,
+                    process_limit=cycle_process_limit,
+                ),
+                dry_run=args.dry_run,
+            )
             if code:
                 failures += 1
                 print(f"batch {batch_index} failed with exit code {code}", flush=True)
+            if args.targeted_workflow and not args.dry_run:
+                targeted_code = run_targeted_workflow(args, batch)
+                if targeted_code:
+                    failures += 1
+                    print(f"batch {batch_index} targeted workflow failed with exit code {targeted_code}", flush=True)
             followup_code = run_followup_commands(args)
             if followup_code:
                 failures += 1

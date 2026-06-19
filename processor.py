@@ -264,6 +264,15 @@ def archive_raw_after_extraction(row, delete_local=True):
 
 def process_pending(limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_VERSION):
     rows = db.get_pending_extractions(limit=limit, extractor=extractor)
+    return process_rows(rows, bucket_dir=bucket_dir, extractor=extractor)
+
+
+def process_pending_for_work_ids(work_ids, limit=10, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_VERSION):
+    rows = db.get_pending_extractions_for_work_ids(work_ids, limit=limit, extractor=extractor)
+    return process_rows(rows, bucket_dir=bucket_dir, extractor=extractor)
+
+
+def process_rows(rows, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_VERSION):
     results = {"processed": 0, "failed": 0, "skipped": 0}
 
     for row in rows:

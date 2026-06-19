@@ -529,6 +529,50 @@ def download_pending_by_domain(
         return {"downloaded": 0, "failed": 0, "skipped": 0}
 
     rows = db.get_pending_download_files(limit=limit)
+    return download_rows_by_domain(
+        rows,
+        bucket_dir=bucket_dir,
+        requests_per_second=requests_per_second,
+        max_bytes=max_bytes,
+        max_domains=max_domains,
+        per_domain_limit=per_domain_limit,
+        quarantine_dir=quarantine_dir,
+    )
+
+
+def download_work_ids_by_domain(
+    work_ids,
+    limit=50,
+    bucket_dir=DEFAULT_RAW_BUCKET_DIR,
+    requests_per_second=0.2,
+    max_bytes=None,
+    max_domains=None,
+    per_domain_limit=None,
+    quarantine_dir=DEFAULT_QUARANTINE_BUCKET_DIR,
+):
+    if per_domain_limit is not None and per_domain_limit <= 0:
+        return {"downloaded": 0, "failed": 0, "skipped": 0}
+    rows = db.get_pending_download_files_for_work_ids(work_ids, limit=limit)
+    return download_rows_by_domain(
+        rows,
+        bucket_dir=bucket_dir,
+        requests_per_second=requests_per_second,
+        max_bytes=max_bytes,
+        max_domains=max_domains,
+        per_domain_limit=per_domain_limit,
+        quarantine_dir=quarantine_dir,
+    )
+
+
+def download_rows_by_domain(
+    rows,
+    bucket_dir=DEFAULT_RAW_BUCKET_DIR,
+    requests_per_second=0.2,
+    max_bytes=None,
+    max_domains=None,
+    per_domain_limit=None,
+    quarantine_dir=DEFAULT_QUARANTINE_BUCKET_DIR,
+):
     grouped = defaultdict(list)
     for row in rows:
         domain = download_domain(row)
