@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 import sqlite3
 from typing import Optional
 import urllib.parse
@@ -13,6 +14,7 @@ import db
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
+MAX_TEXT_PREVIEW_CHARS = 200_000
 
 app = FastAPI(
     title="Archive Archiver API",
@@ -137,6 +139,21 @@ def _merge_known_sites(rows):
 
 def _limit_offset(limit, offset):
     return min(limit, MAX_LIMIT), max(offset, 0)
+
+
+def _read_text_uri(uri, max_chars=MAX_TEXT_PREVIEW_CHARS):
+    parsed = urllib.parse.urlparse(uri or "")
+    if parsed.scheme != "file":
+        raise HTTPException(status_code=400, detail="text preview is only available for local file:// text artifacts")
+    path = Path(urllib.parse.unquote(parsed.path))
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="text artifact not found")
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        text = handle.read(max_chars + 1)
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars]
+    return text, truncated
 
 
 @app.get("/health")
@@ -573,6 +590,142 @@ def list_files(
         ORDER BY files.created_at DESC, files.id DESC
         LIMIT ? OFFSET ?
     """, params)
+
+
+@app.get("/texts")
+def list_texts(
+    q: Optional[str] = None,
+    site: Optional[str] = None,
+    category: Optional[str] = None,
+    status: str = "processed",
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    limit, offset = _limit_offset(limit, offset)
+    filters = []
+    params = []
+    if status:
+        filters.append("COALESCE(extractions.status, 'pending') = ?")
+        params.append(status)
+    if site:
+        filters.append("files.site = ?")
+        params.append(site)
+    if category:
+        filters.append("COALESCE(extractions.category, 'uncategorized') = ?")
+        params.append(category)
+    if q:
+        filters.append("""
+        (
+            works.title LIKE ?
+            OR COALESCE(works.author, '') LIKE ?
+            OR COALESCE(works.search_query, '') LIKE ?
+            OR COALESCE(extractions.category, '') LIKE ?
+            OR files.site LIKE ?
+            OR files.format LIKE ?
+        )
+        """)
+        like = f"%{q}%"
+        params.extend([like, like, like, like, like, like])
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    params.extend([limit, offset])
+    return _rows(f"""
+        SELECT
+            extractions.id AS extraction_id,
+            extractions.download_id,
+            extractions.extractor,
+            extractions.status,
+            extractions.category,
+            extractions.char_count,
+            extractions.text_sha256,
+            extractions.text_uri,
+            extractions.warnings,
+            extractions.error,
+            extractions.updated_at,
+            extractions.processed_at,
+            downloads.id AS download_id,
+            downloads.bytes,
+            downloads.http_status,
+            COALESCE(downloads.scan_status, 'unscanned') AS scan_status,
+            downloads.scan_engine,
+            downloads.scan_signature,
+            downloads.raw_archive_status,
+            downloads.raw_archive_uri,
+            downloads.local_raw_deleted_at,
+            files.id AS file_id,
+            files.work_id,
+            files.site,
+            files.format,
+            files.file_size,
+            files.url,
+            files.download_url,
+            files.trust_level,
+            works.title,
+            works.author,
+            works.search_query
+        FROM extractions
+        JOIN downloads ON downloads.id = extractions.download_id
+        JOIN files ON files.id = downloads.file_id
+        JOIN works ON works.id = files.work_id
+        {where}
+        ORDER BY extractions.updated_at DESC, extractions.id DESC
+        LIMIT ? OFFSET ?
+    """, params)
+
+
+@app.get("/texts/{extraction_id}")
+def get_text(
+    extraction_id: int,
+    max_chars: int = Query(60_000, ge=1, le=MAX_TEXT_PREVIEW_CHARS),
+):
+    row = _one("""
+        SELECT
+            extractions.id AS extraction_id,
+            extractions.download_id,
+            extractions.extractor,
+            extractions.status,
+            extractions.category,
+            extractions.char_count,
+            extractions.text_sha256,
+            extractions.text_uri,
+            extractions.warnings,
+            extractions.error,
+            extractions.updated_at,
+            extractions.processed_at,
+            downloads.bytes,
+            downloads.http_status,
+            COALESCE(downloads.scan_status, 'unscanned') AS scan_status,
+            downloads.scan_engine,
+            downloads.scan_signature,
+            downloads.raw_archive_status,
+            downloads.raw_archive_uri,
+            downloads.local_raw_deleted_at,
+            files.id AS file_id,
+            files.work_id,
+            files.site,
+            files.format,
+            files.file_size,
+            files.url,
+            files.download_url,
+            files.trust_level,
+            works.title,
+            works.author,
+            works.search_query
+        FROM extractions
+        JOIN downloads ON downloads.id = extractions.download_id
+        JOIN files ON files.id = downloads.file_id
+        JOIN works ON works.id = files.work_id
+        WHERE extractions.id = ?
+    """, (extraction_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="text extraction not found")
+    text = ""
+    truncated = False
+    if row.get("status") == "processed" and row.get("text_uri"):
+        text, truncated = _read_text_uri(row["text_uri"], max_chars=max_chars)
+    row["text"] = text
+    row["preview_chars"] = len(text)
+    row["truncated"] = truncated
+    return row
 
 
 @app.get("/corpora")

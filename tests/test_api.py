@@ -24,6 +24,8 @@ class ApiTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def _add_fixture(self):
+        text_path = Path(self.tempdir.name) / "work-text.txt"
+        text_path.write_text("First line of fixture text.\nSecond line for review.\n", encoding="utf-8")
         work_id = db.add_work("API Fixture", "Test Author", "test query")
         db.add_file(
             work_id=work_id,
@@ -53,9 +55,9 @@ class ApiTests(unittest.TestCase):
         db.mark_extraction_succeeded(
             download_id=download_id,
             extractor="plaintext.v2",
-            text_uri="file:///tmp/work-text.txt",
+            text_uri=text_path.resolve().as_uri(),
             text_sha256="text-sha",
-            char_count=42,
+            char_count=text_path.stat().st_size,
             category="philosophy",
         )
         return work_id
@@ -72,7 +74,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(summary["total_works"], 1)
         self.assertEqual(summary["downloaded_bytes"], 12)
-        self.assertEqual(summary["extracted_chars"], 42)
+        self.assertEqual(summary["extracted_chars"], 52)
         self.assertEqual(summary["clean_scans"], 1)
         self.assertEqual(summary["quarantined_files"], 0)
         self.assertEqual(summary["archived_raw_files"], 0)
@@ -182,6 +184,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["files"][0]["extraction_status"], "processed")
         self.assertEqual(payload["files"][0]["scan_status"], "clean")
         self.assertEqual(payload["files"][0]["trust_level"], "trusted")
+
+    def test_text_review_endpoints_return_metadata_and_preview(self):
+        self._add_fixture()
+
+        rows = self.api.list_texts(q="fixture", category="philosophy", limit=50, offset=0)
+        payload = self.api.get_text(rows[0]["extraction_id"], max_chars=12)
+
+        self.assertEqual(rows[0]["title"], "API Fixture")
+        self.assertEqual(rows[0]["category"], "philosophy")
+        self.assertEqual(payload["text"], "First line o")
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["preview_chars"], 12)
 
     def test_dimensions_include_dynamic_category_metadata(self):
         db.ensure_category(
