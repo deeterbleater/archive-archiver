@@ -4,12 +4,15 @@ import re
 from openai import OpenAI
 from dotenv import load_dotenv
 
+import terminal_theme
+
 # Load environment variables
 load_dotenv()
 
 # Default free models on OpenRouter
 DEFAULT_MODEL = "qwen/qwen3.7-plus"
 DEFAULT_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "60"))
+ANALYSIS_BUBBLE_RESPONSE_CHARS = int(os.getenv("ALGE_ANALYSIS_BUBBLE_RESPONSE_CHARS", "1600"))
 
 def get_openrouter_client():
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -109,11 +112,37 @@ Return ONLY a valid JSON object matching the following structure. Do not output 
 }}
 """
 
+    system_message = "You are a precise data extraction agent. You output only structured JSON."
+    content_preview = re.sub(r"\s+", " ", cleaned_html or "").strip()[:360]
+    terminal_theme.print_chat_bubble(
+        "system -> analyzer",
+        system_message,
+        border_style="muted",
+        align="left",
+    )
+    terminal_theme.print_chat_bubble(
+        "crawler -> analyzer",
+        (
+            f"Analyze {url}\n"
+            f"Cleaned page content: {len(cleaned_html or '')} chars.\n"
+            "Extract title, author, and downloadable file versions as JSON only.\n"
+            f"Preview: {content_preview or 'no text preview available'}"
+        ),
+        border_style="pond",
+        align="right",
+    )
+    terminal_theme.print_chat_bubble(
+        "analyzer",
+        f"Working with {model}; waiting for OpenRouter response...",
+        border_style="warning",
+        align="left",
+    )
+
     try:
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are a precise data extraction agent. You output only structured JSON."},
+                {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt}
             ],
             extra_headers={
@@ -124,6 +153,15 @@ Return ONLY a valid JSON object matching the following structure. Do not output 
         )
         
         raw_output = response.choices[0].message.content.strip()
+        response_preview = raw_output
+        if len(response_preview) > ANALYSIS_BUBBLE_RESPONSE_CHARS:
+            response_preview = response_preview[:ANALYSIS_BUBBLE_RESPONSE_CHARS].rstrip() + "\n..."
+        terminal_theme.print_chat_bubble(
+            "analyzer -> crawler",
+            response_preview,
+            border_style="tool",
+            align="left",
+        )
         
         # Extract JSON from markdown block if LLM formats it that way
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
@@ -134,13 +172,35 @@ Return ONLY a valid JSON object matching the following structure. Do not output 
             
         # Parse JSON
         parsed_data = json.loads(json_str)
+        terminal_theme.print_chat_bubble(
+            "crawler",
+            (
+                "Parsed analyzer JSON successfully.\n"
+                f"Title: {parsed_data.get('title') or 'unknown'}\n"
+                f"Files: {len(parsed_data.get('files') or [])}"
+            ),
+            border_style="success",
+            align="right",
+        )
         return parsed_data
         
     except json.JSONDecodeError as e:
+        terminal_theme.print_chat_bubble(
+            "crawler",
+            f"Could not parse analyzer response as JSON: {e}",
+            border_style="danger",
+            align="right",
+        )
         print(f"[!] Error decoding JSON from LLM response: {e}")
         print("Raw output from LLM was:")
         print(raw_output)
     except Exception as e:
+        terminal_theme.print_chat_bubble(
+            "OpenRouter",
+            f"Analysis request failed: {e}",
+            border_style="danger",
+            align="left",
+        )
         print(f"[!] OpenRouter API call error: {e}")
         
     return None

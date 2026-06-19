@@ -46,6 +46,20 @@ class TerminalThemeTests(unittest.TestCase):
         self.assertIn("witchcraft occult archives", output)
         self.assertIn("limit", output)
 
+    def test_chat_bubble_renderable_shows_speaker_and_text(self):
+        renderable = terminal_theme.chat_bubble_renderable(
+            "crawler -> analyzer",
+            "Extract title and files as JSON.",
+            border_style="pond",
+            align="right",
+        )
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(renderable)
+        output = capture.get()
+
+        self.assertIn("crawler -> analyzer", output)
+        self.assertIn("Extract title and files as JSON.", output)
+
 
 if __name__ == "__main__":
     unittest.main()

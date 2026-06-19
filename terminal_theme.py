@@ -8,6 +8,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
+from rich.align import Align
 
 
 POND_SCUM = "#6f8f1f"
@@ -43,6 +44,25 @@ def print_panel(text, title=None, style="pond", border_style="pond"):
         console.print(Panel(renderable, title=title, border_style=border_style))
     except MarkupError:
         console.print(Panel(escape(str(text)), title=title, style=style, border_style=border_style))
+
+
+def chat_bubble_renderable(speaker, text, border_style="pond", align="left"):
+    body = Text(str(text).strip() or "...", overflow="fold")
+    panel = Panel(
+        body,
+        title=str(speaker),
+        title_align="left",
+        border_style=border_style,
+        padding=(0, 1),
+        expand=False,
+    )
+    if align == "right":
+        return Align.right(panel)
+    return Align.left(panel)
+
+
+def print_chat_bubble(speaker, text, border_style="pond", align="left"):
+    console.print(chat_bubble_renderable(speaker, text, border_style=border_style, align=align))
 
 
 def print_rule(title="", style="pond"):
