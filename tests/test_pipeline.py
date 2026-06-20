@@ -98,6 +98,18 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(mode, "text")
         self.assertIn("Readable muse text", text)
 
+    def test_fb2_extracts_as_xml_text(self):
+        path = Path(self.tempdir.name) / "fixture.fb2"
+        path.write_text(
+            "<FictionBook><body><section><p>Readable FB2 text.</p></section></body></FictionBook>",
+            encoding="utf-8",
+        )
+
+        text, mode = processor.extract_plaintext(path, format_hint="FB2")
+
+        self.assertEqual(mode, "html")
+        self.assertIn("Readable FB2 text", text)
+
     def test_local_validator_rejects_binary_garbage(self):
         result = text_validator.heuristic_quality("\x8b\b\b\x00\x00\x00garbage")
 

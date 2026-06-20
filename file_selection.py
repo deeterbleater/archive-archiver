@@ -10,6 +10,7 @@ FORMAT_PREFERENCE = {
     "html": 1,
     "htm": 1,
     "epub": 2,
+    "fb2": 3,
     "rtf": 3,
     "docx": 4,
     "doc": 5,

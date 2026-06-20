@@ -58,6 +58,7 @@ EXTRACTABLE_LINK_FORMATS = {
     ".xml": "HTML",
     ".pdf": "PDF",
     ".epub": "EPUB",
+    ".fb2": "FB2",
     ".mobi": "MOBI",
     ".azw3": "AZW3",
     ".djvu": "DJVU",
@@ -125,7 +126,7 @@ def clean_html(html_content):
     
     return cleaned
 
-def search_archive_org(query):
+def search_archive_org(query, max_results=10):
     """
     Searches Archive.org using their Advanced Search API.
     Returns a list of matching items with their metadata.
@@ -134,7 +135,7 @@ def search_archive_org(query):
     params = {
         "q": f"{query} AND mediatype:texts",
         "fl[]": "identifier,title,creator",
-        "rows": 10,
+        "rows": max_results,
         "page": 1,
         "output": "json"
     }
@@ -798,7 +799,7 @@ def search_anarchist_library(query):
                 
     return results[:10] # limit to top 10
 
-def _search_annas_archive_mirror(query, mirror):
+def _search_annas_archive_mirror(query, mirror, limit=10):
     """
     Searches one Anna's Archive mirror for a query.
     Returns detail page URLs found on the search result page.
@@ -828,10 +829,10 @@ def _search_annas_archive_mirror(query, mirror):
                     "url": full_url
                 })
                 
-    return results[:10]
+    return results[:limit]
 
 
-def search_annas_archive(query, mirrors=None):
+def search_annas_archive(query, mirrors=None, limit=10):
     """
     Searches Anna's Archive mirrors for a query. Mirrors are isolated so a down
     host does not fail the whole source.
@@ -848,7 +849,7 @@ def search_annas_archive(query, mirrors=None):
     seen = set()
     for mirror in mirrors:
         try:
-            mirror_rows = _search_annas_archive_mirror(query, mirror)
+            mirror_rows = _search_annas_archive_mirror(query, mirror, limit=limit)
         except Exception:
             continue
         for row in mirror_rows:
@@ -856,9 +857,9 @@ def search_annas_archive(query, mirrors=None):
                 continue
             seen.add(row["url"])
             rows.append(row)
-        if len(rows) >= 10:
+        if len(rows) >= limit:
             break
-    return rows[:10]
+    return rows[:limit]
 
 
 def search_substack(query):
@@ -1060,9 +1061,28 @@ def _candidate_search_urls(mirror, query):
     ]
 
 
-def _extract_detail_links(html, base_url, query, mirror):
+def _detail_result_key(row, mirror=None):
+    try:
+        parsed = urllib.parse.urlparse(row.get("url") or "")
+    except ValueError:
+        return row.get("url")
+    path = parsed.path.lower()
+    query = urllib.parse.parse_qs(parsed.query)
+    group = (mirror or {}).get("group")
+    if group == "annas_archive" and "/md5/" in path:
+        return f"anna:{path.rsplit('/md5/', 1)[-1].strip('/')}"
+    if group == "libgen_plus" and path.endswith(("/edition.php", "/file.php")):
+        ids = query.get("id")
+        if ids:
+            page = path.rsplit("/", 1)[-1]
+            return f"libgen:{page}:{ids[0]}"
+    return urllib.parse.urlunparse(parsed._replace(scheme="", netloc="", fragment=""))
+
+
+def _extract_detail_links(html, base_url, query, mirror, limit=5):
     soup = BeautifulSoup(html, "html.parser")
     results = []
+    seen = set()
     terms = [term.lower() for term in re.findall(r"[A-Za-z0-9]{4,}", query)[:5]]
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -1083,20 +1103,24 @@ def _extract_detail_links(html, base_url, query, mirror):
                 continue
         elif mirror["group"] != "annas_archive" and terms and not any(term in text.lower() or term in full_url.lower() for term in terms):
             continue
-        if full_url not in [row["url"] for row in results]:
-            results.append({
-                "title": text or mirror["name"],
-                "url": full_url,
-                "site": parsed.netloc,
-                "source_name": mirror["name"],
-                "trust_level": "untrusted",
-            })
-        if len(results) >= 5:
+        row = {
+            "title": text or mirror["name"],
+            "url": full_url,
+            "site": parsed.netloc,
+            "source_name": mirror["name"],
+            "trust_level": "untrusted",
+        }
+        key = _detail_result_key(row, mirror)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(row)
+        if len(results) >= limit:
             break
     return results
 
 
-def search_slum_archives(query, mirrors=None):
+def search_slum_archives(query, mirrors=None, limit=10):
     """
     Searches the less-trusted mirrors listed by open-slum.org.
     Each mirror is isolated: outage, timeout, or unexpected markup returns no
@@ -1104,22 +1128,30 @@ def search_slum_archives(query, mirrors=None):
     """
     mirrors = mirrors or SLUM_ARCHIVE_MIRRORS
     all_results = []
+    seen = set()
     for mirror in mirrors:
         for search_url in _candidate_search_urls(mirror, query):
             html = fetch_url(search_url, retries=1, delay=0.2)
             if not html:
                 continue
-            results = _extract_detail_links(html, search_url, query, mirror)
+            results = _extract_detail_links(html, search_url, query, mirror, limit=limit)
             if results:
-                all_results.extend(results)
+                for row in results:
+                    key = _detail_result_key(row, mirror)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    all_results.append(row)
+                    if len(all_results) >= limit:
+                        return all_results
                 break
     return all_results
 
 
-def search_libgen(query, mirrors=None):
+def search_libgen(query, mirrors=None, limit=10):
     """Search only the LibGen mirror subset from the SLUM mirror catalog."""
     mirrors = mirrors or [
         mirror for mirror in SLUM_ARCHIVE_MIRRORS
         if mirror.get("group") == "libgen_plus"
     ]
-    return search_slum_archives(query, mirrors=mirrors)
+    return search_slum_archives(query, mirrors=mirrors, limit=limit)

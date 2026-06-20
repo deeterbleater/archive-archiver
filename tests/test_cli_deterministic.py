@@ -48,6 +48,27 @@ class CliDeterministicParsingTests(unittest.TestCase):
         self.assertEqual(pending[0]["format"], "Muse")
         self.assertEqual(pending[0]["download_url"], "https://theanarchistlibrary.org/library/petr-kropotkin-the-conquest-of-bread.muse")
 
+    def test_archive_plugin_crawl_skips_llm_when_no_deterministic_files(self):
+        url = "https://archive.example/navigation"
+        html = """
+        <html>
+          <head><title>Navigation Page</title></head>
+          <body><a href="/about.html">About</a></body>
+        </html>
+        """
+
+        with mock.patch("archive_plugins.search_plugins", return_value=[{"title": "Navigation Page", "url": url, "site": "archive.example"}]):
+            with mock.patch("scrapers.fetch_url", return_value=html):
+                with mock.patch("llm.parse_page_with_llm", side_effect=AssertionError("LLM should not run")):
+                    cli.perform_crawl(
+                        "asimov",
+                        model=None,
+                        max_results=1,
+                        sources=["archive_plugins"],
+                    )
+
+        self.assertEqual(db.get_pending_download_files(limit=10), [])
+
 
 if __name__ == "__main__":
     unittest.main()

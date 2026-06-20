@@ -114,6 +114,22 @@ def _node_title(node, plugin, fallback_url):
     return title[:240] or fallback_url
 
 
+def _query_terms(query):
+    return [term.lower() for term in re.findall(r"[A-Za-z0-9]{4,}", str(query or ""))]
+
+
+def _matches_query(row, query):
+    terms = _query_terms(query)
+    if not terms:
+        return True
+    haystack = " ".join([
+        str(row.get("title") or ""),
+        str(row.get("url") or ""),
+        str(row.get("site") or ""),
+    ]).lower()
+    return any(term in haystack for term in terms)
+
+
 def search_plugin(plugin, query, limit=10):
     if not plugin.get("enabled", True):
         return []
@@ -129,15 +145,18 @@ def search_plugin(plugin, query, limit=10):
         url = _node_link(node, plugin, search_url)
         if not url or url in seen:
             continue
-        seen.add(url)
-        rows.append({
+        row = {
             "title": _node_title(node, plugin, url),
             "url": url,
             "site": urllib.parse.urlparse(url).netloc,
             "source_name": plugin.get("name") or plugin.get("slug"),
             "plugin_slug": plugin.get("slug"),
             "trust_level": plugin.get("trust_level") or "untrusted",
-        })
+        }
+        if not _matches_query(row, query):
+            continue
+        seen.add(url)
+        rows.append(row)
         if len(rows) >= limit:
             break
     return rows

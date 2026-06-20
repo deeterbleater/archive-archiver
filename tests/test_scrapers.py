@@ -78,9 +78,10 @@ class ScraperSourceTests(unittest.TestCase):
     def test_libgen_search_uses_only_libgen_mirrors(self):
         captured = {}
 
-        def fake_slum_search(query, mirrors=None):
+        def fake_slum_search(query, mirrors=None, limit=10):
             captured["query"] = query
             captured["mirrors"] = mirrors
+            captured["limit"] = limit
             return []
 
         original = scrapers.search_slum_archives
@@ -92,8 +93,33 @@ class ScraperSourceTests(unittest.TestCase):
 
         self.assertEqual(rows, [])
         self.assertEqual(captured["query"], "religion")
+        self.assertEqual(captured["limit"], 10)
         self.assertTrue(captured["mirrors"])
         self.assertTrue(all(mirror["group"] == "libgen_plus" for mirror in captured["mirrors"]))
+
+    def test_slum_search_dedupes_libgen_mirror_edition_ids(self):
+        html = """
+        <html><body>
+          <a href="/edition.php?id=42">Foundation</a>
+          <a href="/edition.php?id=99">Robots</a>
+        </body></html>
+        """
+        mirrors = [
+            {"name": "LibGen One", "group": "libgen_plus", "url": "https://libgen-one.example/"},
+            {"name": "LibGen Two", "group": "libgen_plus", "url": "https://libgen-two.example/"},
+        ]
+        original_fetch = scrapers.fetch_url
+        try:
+            scrapers.fetch_url = lambda *_args, **_kwargs: html
+            rows = scrapers.search_slum_archives("asimov", mirrors=mirrors, limit=10)
+        finally:
+            scrapers.fetch_url = original_fetch
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["url"] for row in rows], [
+            "https://libgen-one.example/edition.php?id=42",
+            "https://libgen-one.example/edition.php?id=99",
+        ])
 
     def test_libgen_link_extractor_skips_navigation_links(self):
         html = """

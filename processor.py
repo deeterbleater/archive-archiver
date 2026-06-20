@@ -119,7 +119,7 @@ def extract_plaintext(path, content_type=None, format_hint=None):
             return _extract_html(raw), "html.gz"
         return _normalize_text(_decode_bytes(raw)), "text.gz"
 
-    if suffix in (".html", ".htm", ".xml") or "html" in hint:
+    if suffix in (".html", ".htm", ".xml", ".fb2") or "html" in hint or "fb2" in hint:
         return _extract_html(raw), "html"
 
     if suffix in (".txt", ".text", ".md", ".muse", ".json", ".csv") or "text" in hint or "muse" in hint:

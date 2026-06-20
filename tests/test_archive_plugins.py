@@ -62,6 +62,31 @@ class ArchivePluginTests(unittest.TestCase):
         self.assertEqual(rows[0]["url"], "https://archive.example/works/readable")
         self.assertEqual(rows[0]["trust_level"], "untrusted")
 
+    def test_search_plugin_filters_navigation_links_that_do_not_match_query(self):
+        plugin = archive_plugins.add_plugin(
+            name="Local Archive",
+            base_url="https://archive.example",
+            search_url_template="https://archive.example/find?q={query}",
+            result_selector="a[href]",
+            path=self.registry,
+        )
+        html = """
+        <html><body>
+          <a href="/shop">Shop</a>
+          <a href="/works/asimov-foundation">Isaac Asimov Foundation</a>
+        </body></html>
+        """
+        original_fetch_url = scrapers.fetch_url
+
+        try:
+            scrapers.fetch_url = lambda *_args, **_kwargs: html
+            rows = archive_plugins.search_plugin(plugin, "Isaac Asimov")
+        finally:
+            scrapers.fetch_url = original_fetch_url
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["url"], "https://archive.example/works/asimov-foundation")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@ TORRENT_PAYLOAD_EXTENSIONS = {
     ".xml",
     ".pdf",
     ".epub",
+    ".fb2",
     ".gz",
 }
 

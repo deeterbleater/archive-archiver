@@ -146,7 +146,14 @@ def _stop_requested(should_stop):
     return bool(should_stop and should_stop())
 
 
-def _parse_page_with_deterministic_fallback(html, url, model, source_name=None, trust_level="untrusted"):
+def _parse_page_with_deterministic_fallback(
+    html,
+    url,
+    model,
+    source_name=None,
+    trust_level="untrusted",
+    allow_llm=True,
+):
     parsed_data = scrapers.parse_known_archive_page(
         html,
         url,
@@ -156,6 +163,10 @@ def _parse_page_with_deterministic_fallback(html, url, model, source_name=None, 
     if parsed_data:
         print("      [+] Parsed download links deterministically.")
         return parsed_data
+
+    if not allow_llm:
+        print("      [!] No deterministic download links found; skipping OpenRouter fallback.")
+        return None
 
     cleaned = scrapers.clean_html(html)
     print("      [*] Analyzing page with OpenRouter LLM...")
@@ -175,7 +186,7 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
     # 1. ARCHIVE.ORG SEARCH
     if "archive_org" in sources and not _stop_requested(should_stop):
         print("[*] Querying Archive.org Search API...")
-        archive_docs = scrapers.search_archive_org(query)
+        archive_docs = scrapers.search_archive_org(query, max_results=max_results)
         # Filter Archive.org files to only top max_results docs
         print(f"[+] Found {len(archive_docs)} matching documents on Archive.org. Processing top {max_results}...")
         for doc in archive_docs[:max_results]:
@@ -301,12 +312,12 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 else:
                     print(f"      [!] No downloadable version found for: '{title}'")
             else:
-                print("      [!] LLM failed to parse or extract structure.")
+                print("      [!] No structured archive data extracted.")
             
     # 5. ANNA'S ARCHIVE SEARCH
     if "annas_archive" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying Anna's Archive...")
-        annas_results = scrapers.search_annas_archive(query)
+        annas_results = scrapers.search_annas_archive(query, limit=max_results)
         print(f"[+] Found {len(annas_results)} search results on Anna's Archive. Analyzing top {max_results}...")
         for res in annas_results[:max_results]:
             if _stop_requested(should_stop):
@@ -346,12 +357,12 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 else:
                     print(f"      [!] No downloadable version found for: '{title}'")
             else:
-                print("      [!] LLM failed to parse or extract structure.")
+                print("      [!] No structured archive data extracted.")
 
     # 6. LIBGEN MIRROR SEARCH
     if "libgen" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying LibGen mirrors...")
-        libgen_results = scrapers.search_libgen(query)
+        libgen_results = scrapers.search_libgen(query, limit=max_results)
         print(f"[+] Found {len(libgen_results)} candidate results across LibGen mirrors. Analyzing top {max_results}...")
         for res in libgen_results[:max_results]:
             if _stop_requested(should_stop):
@@ -393,12 +404,12 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 else:
                     print(f"      [!] No downloadable version found for: '{title}'")
             else:
-                print("      [!] LLM failed to parse or extract structure.")
+                print("      [!] No structured archive data extracted.")
 
     # 6. OPEN-SLUM MIRROR SET
     if "slum_archives" in sources and not _stop_requested(should_stop):
         print("\n[*] Querying Open SLUM mirror set...")
-        slum_results = scrapers.search_slum_archives(query)
+        slum_results = scrapers.search_slum_archives(query, limit=max_results)
         print(f"[+] Found {len(slum_results)} candidate results across SLUM mirrors. Analyzing top {max_results}...")
         for res in slum_results[:max_results]:
             if _stop_requested(should_stop):
@@ -440,7 +451,7 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 else:
                     print(f"      [!] No downloadable version found for: '{title}'")
             else:
-                print("      [!] LLM failed to parse or extract structure.")
+                print("      [!] No structured archive data extracted.")
 
     # 7. CONFIGURED ARCHIVE PLUGINS
     if "archive_plugins" in sources and not _stop_requested(should_stop):
@@ -464,6 +475,7 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 model,
                 source_name=res.get("source_name", "Archive plugin"),
                 trust_level=res.get("trust_level", "untrusted"),
+                allow_llm=False,
             )
 
             if parsed_data and parsed_data.get("title"):
@@ -484,7 +496,7 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 else:
                     print(f"      [!] No downloadable version found for: '{title}'")
             else:
-                print("      [!] LLM failed to parse or extract structure.")
+                print("      [!] No structured archive data extracted.")
 
     print(f"\n[+] Crawl complete for: '{query}'")
 
