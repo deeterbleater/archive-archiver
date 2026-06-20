@@ -1,16 +1,3 @@
 {
-  "archives": [
-    {
-      "base_url": "https://www.sacred-texts.com",
-      "enabled": true,
-      "link_selector": null,
-      "name": "sacred-texts.com",
-      "result_selector": "a[href]",
-      "search_url_template": "https://www.sacred-texts.com/search.htm?q={query}",
-      "slug": "sacred_texts_com",
-      "strategy": "search-page-links",
-      "title_selector": null,
-      "trust_level": "untrusted"
-    }
-  ]
+  "archives": []
 }

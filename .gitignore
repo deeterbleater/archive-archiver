@@ -6,6 +6,7 @@ __pycache__/
 # Local Database
 archive_works.db
 bucket/
+backups/
 logs/
 research_report_*.md
 
