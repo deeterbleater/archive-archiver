@@ -102,20 +102,38 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(captured["workers"], 2)
         self.assertTrue(captured["no_llm"])
 
-    def test_auto_slash_command_dispatches_to_cli(self):
+    def test_auto_slash_command_starts_and_stops_background_worker(self):
         captured = {}
 
         def fake_auto(args):
             captured.update(vars(args))
+            args.should_stop()
 
         with mock.patch.object(self.shell.cli, "handle_auto", side_effect=fake_auto):
             result, _output = self._run("/auto --once --query-limit 4 --sleep-seconds 9 --download-limit 11")
+            if self.shell._auto_thread:
+                self.shell._auto_thread.join(timeout=2)
 
         self.assertIsNone(result)
         self.assertTrue(captured["once"])
         self.assertEqual(captured["query_limit"], 4)
         self.assertEqual(captured["sleep_seconds"], 9)
         self.assertEqual(captured["download_limit"], 11)
+        self.assertIn("should_stop", captured)
+
+        def wait_for_stop(args):
+            deadline = time.time() + 2
+            while time.time() < deadline and not args.should_stop():
+                time.sleep(0.01)
+
+        with mock.patch.object(self.shell.cli, "handle_auto", side_effect=wait_for_stop):
+            self._run("/auto")
+            result, output = self._run("/auto --stop")
+            if self.shell._auto_thread:
+                self.shell._auto_thread.join(timeout=2)
+
+        self.assertIsNone(result)
+        self.assertIn("auto stop requested", output)
 
     def test_rss_ingest_slash_command_dispatches_to_cli(self):
         captured = {}

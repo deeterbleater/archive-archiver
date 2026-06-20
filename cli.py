@@ -795,8 +795,18 @@ def _run_collect_cycle(args, queries, cycle):
     errors = []
     search_results = {"searched": 0, "failed": 0}
     for query in queries:
+        if _stop_requested(getattr(args, "should_stop", None)):
+            print("[!] Collection cycle stop requested before next query.")
+            break
+
         def search_one(query=query):
-            perform_crawl(query, args.model, args.max_results, sources=args.sources)
+            perform_crawl(
+                query,
+                args.model,
+                args.max_results,
+                sources=args.sources,
+                should_stop=getattr(args, "should_stop", None),
+            )
             return True
 
         _result, exc = _collect_phase(f"search:{query}", search_one)
@@ -856,9 +866,11 @@ def _run_collect_cycle(args, queries, cycle):
     return errors
 
 
-def _sleep_interruptibly(seconds):
+def _sleep_interruptibly(seconds, should_stop=None):
     deadline = time.time() + max(0, seconds)
     while time.time() < deadline:
+        if _stop_requested(should_stop):
+            return
         time.sleep(min(5, deadline - time.time()))
 
 
@@ -871,6 +883,9 @@ def handle_collect(args):
     cycle = 0
     consecutive_error_cycles = 0
     while True:
+        if _stop_requested(getattr(args, "should_stop", None)):
+            print("[!] Collection loop stopped by operator.")
+            break
         cycle += 1
         errors = _run_collect_cycle(args, queries, cycle)
         if errors:
@@ -887,7 +902,7 @@ def handle_collect(args):
                 args.error_sleep_seconds * max(1, consecutive_error_cycles),
             )
             print(f"[!] Collection cycle had {len(errors)} error(s); backing off for {sleep_seconds}s.")
-        _sleep_interruptibly(sleep_seconds)
+        _sleep_interruptibly(sleep_seconds, getattr(args, "should_stop", None))
 
 
 def handle_auto(args):
@@ -895,6 +910,9 @@ def handle_auto(args):
     consecutive_error_cycles = 0
     extra_queries = _load_queries(args) if args.queries_file or args.query else []
     while True:
+        if _stop_requested(getattr(args, "should_stop", None)):
+            print("[!] Auto loop stopped by operator.")
+            break
         cycle += 1
         queries = build_auto_queries(
             limit=args.query_limit,
@@ -916,7 +934,7 @@ def handle_auto(args):
                 args.error_sleep_seconds * max(1, consecutive_error_cycles),
             )
             print(f"[!] Auto cycle had {len(errors)} error(s); backing off for {sleep_seconds}s.")
-        _sleep_interruptibly(sleep_seconds)
+        _sleep_interruptibly(sleep_seconds, getattr(args, "should_stop", None))
 
 def handle_process(args):
     results = processor.process_pending(

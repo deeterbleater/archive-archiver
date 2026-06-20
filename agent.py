@@ -133,6 +133,8 @@ class ArchiveAgentShell(cmd.Cmd):
         self._agent_last_activity = time.monotonic()
         self._agent_current_operation = "idle"
         self._goal_stop_requested = False
+        self._auto_thread = None
+        self._auto_stop_event = threading.Event()
         self.tools = agent_tools.AppToolRunner(self)
 
     def _run_parser(self, parser, line):
@@ -428,6 +430,8 @@ class ArchiveAgentShell(cmd.Cmd):
 
     def do_exit(self, _line):
         """Leave the agent harness."""
+        if self._auto_thread and self._auto_thread.is_alive():
+            self._auto_stop_event.set()
         terminal_theme.print_markup("[muted]bye[/muted]")
         if os.getenv("ALGE_TMUX_MANAGED") == "1" and os.getenv("TMUX"):
             session = os.getenv("ALGE_TMUX_SESSION", "alge")
@@ -1143,8 +1147,10 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         ))
 
     def do_auto(self, line):
-        """Continuously expand the data lake: auto [--query-limit N] [--sleep-seconds N]."""
+        """Continuously expand the data lake in the background: auto [--stop|--status]."""
         parser = _parser("auto")
+        parser.add_argument("--stop", action="store_true")
+        parser.add_argument("--status", action="store_true")
         parser.add_argument("--query", action="append")
         parser.add_argument("--queries-file")
         parser.add_argument("--sources", nargs="+", choices=self.cli.ALL_SOURCES, default=self.config["sources"])
@@ -1168,7 +1174,38 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         args = self._run_parser(parser, line)
         if not args:
             return
-        self.cli.handle_auto(self._namespace(**vars(args)))
+        if args.stop:
+            if self._auto_thread and self._auto_thread.is_alive():
+                self._auto_stop_event.set()
+                print("[+] auto stop requested.")
+            else:
+                print("[=] auto is not running.")
+            return
+        if args.status:
+            status = "running" if self._auto_thread and self._auto_thread.is_alive() else "stopped"
+            print(f"auto: {status}")
+            return
+        if self._auto_thread and self._auto_thread.is_alive():
+            print("[!] auto is already running. Use /auto --stop first.")
+            return
+
+        values = vars(args)
+        values.pop("stop", None)
+        values.pop("status", None)
+        self._auto_stop_event.clear()
+        auto_args = self._namespace(**values, should_stop=self._auto_stop_event.is_set)
+
+        def run_auto():
+            try:
+                self.cli.handle_auto(auto_args)
+            except Exception as exc:
+                terminal_theme.print_markup(f"[danger]auto loop failed: {type(exc).__name__}: {exc}[/danger]")
+            finally:
+                self._auto_stop_event.clear()
+
+        self._auto_thread = threading.Thread(target=run_auto, name="alge-auto", daemon=True)
+        self._auto_thread.start()
+        print("[+] auto started in the background. Use /auto --status or /auto --stop.")
 
     def do_corpus(self, line):
         """Build a corpus: corpus NAME [--query TEXT] [--ordering title|hash|created|random]."""

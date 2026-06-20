@@ -89,6 +89,15 @@ class CollectResilienceTests(unittest.TestCase):
         planner.assert_called_once()
         run_cycle.assert_called_once_with(args, ["alpha", "beta"], 1)
 
+    def test_auto_loop_honors_stop_callback_before_cycle(self):
+        args = collect_args(query=None, once=False, should_stop=lambda: True)
+        args.query_limit = 3
+
+        with mock.patch("cli._run_collect_cycle") as run_cycle:
+            cli.handle_auto(args)
+
+        run_cycle.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
