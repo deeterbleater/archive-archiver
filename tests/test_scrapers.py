@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import cli
 import scrapers
@@ -53,6 +54,60 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertEqual(rows[0]["site"], "substack.com")
         self.assertEqual(rows[0]["format"], "HTML")
         self.assertEqual(rows[0]["download_url"], "https://substack.com/@huryn/note/c-181571328")
+
+    def test_substack_web_fallback_extracts_note_rows(self):
+        html = """
+        <html><body>
+          <a class="result__a" href="https://substack.com/@huryn/note/c-181571328">Huryn Note</a>
+          <a class="result__a" href="https://example.org/not-substack">Other</a>
+        </body></html>
+        """
+
+        class Response:
+            text = html
+
+            def raise_for_status(self):
+                return None
+
+        with mock.patch("scrapers.requests.get", side_effect=RuntimeError("bing unavailable")):
+            with mock.patch("scrapers.requests.post", return_value=Response()):
+                rows = scrapers.search_substack_web("huryn")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["download_url"], "https://substack.com/@huryn/note/c-181571328")
+
+    def test_substack_bing_rss_fallback_extracts_note_rows(self):
+        rss = """<?xml version="1.0"?>
+        <rss version="2.0"><channel>
+          <item>
+            <title>Huryn Note</title>
+            <link>https://substack.com/@huryn/note/c-181571328</link>
+          </item>
+        </channel></rss>
+        """
+
+        class Response:
+            text = rss
+
+            def raise_for_status(self):
+                return None
+
+        with mock.patch("scrapers.requests.get", return_value=Response()):
+            rows = scrapers.search_substack_web("huryn")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["download_url"], "https://substack.com/@huryn/note/c-181571328")
+
+    def test_substack_search_falls_back_to_web_when_native_search_empty(self):
+        with mock.patch("scrapers.search_substack_web", return_value=[{"url": "fallback"}]) as fallback:
+            with mock.patch("scrapers.requests.get") as get:
+                get.return_value.status_code = 200
+                get.return_value.json.return_value = {"focused": [], "results": [], "resultsWithTrackingParams": []}
+                with mock.patch("scrapers.fetch_url", return_value="<html></html>"):
+                    rows = scrapers.search_substack("huryn")
+
+        self.assertEqual(rows, [{"url": "fallback"}])
+        fallback.assert_called_once_with("huryn")
 
     def test_substack_feed_parser_returns_html_rows(self):
         xml = """<?xml version="1.0" encoding="UTF-8"?>

@@ -926,9 +926,134 @@ def search_substack(query):
 
     search_url = f"https://substack.com/search/{urllib.parse.quote(query)}"
     html = fetch_url(search_url, retries=2, delay=0.5)
-    if not html:
+    if html:
+        rows = parse_substack_search(html, search_url, query=query)
+        if rows:
+            return rows
+
+    return search_substack_web(query)
+
+
+def _decode_duckduckgo_href(href):
+    parsed = urllib.parse.urlparse(href)
+    if parsed.netloc.endswith("duckduckgo.com"):
+        query = urllib.parse.parse_qs(parsed.query)
+        return (query.get("uddg") or [href])[0]
+    return href
+
+
+def _substack_web_queries(query):
+    query = str(query or "").strip()
+    terms = [f"site:substack.com {query}"]
+    handle = query.lstrip("@")
+    if re.fullmatch(r"[A-Za-z0-9_-]{2,40}", handle):
+        terms.insert(0, f"site:substack.com/@{handle} {handle}")
+    return _dedupe_preserve_order(terms)
+
+
+def _dedupe_preserve_order(items):
+    seen = set()
+    result = []
+    for item in items:
+        key = str(item).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def search_substack_web(query, limit=10):
+    """Fallback to public SERP links when Substack's own search APIs return empty."""
+    rows = []
+    seen = set()
+    for search_query in _substack_web_queries(query):
+        rows.extend(_search_substack_bing_rss(search_query, seen=seen, limit=limit - len(rows)))
+        if len(rows) >= limit:
+            return rows[:limit]
+
+        try:
+            response = requests.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": search_query},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            print(f"[!] Error searching Substack via web fallback: {exc}")
+            continue
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        for a in soup.select("a.result__a[href]"):
+            href = _decode_duckduckgo_href(a.get("href") or "")
+            try:
+                parsed = urllib.parse.urlparse(href)
+            except ValueError:
+                continue
+            host = parsed.netloc.lower()
+            path = parsed.path
+            is_item = (
+                host.endswith(".substack.com") and ("/p/" in path or "/note/" in path)
+            ) or (
+                host == "substack.com" and re.search(r"/@[^/]+/(?:p|note)/", path)
+            )
+            if not is_item:
+                continue
+            clean_url = urllib.parse.urlunparse(parsed._replace(fragment=""))
+            if clean_url in seen:
+                continue
+            seen.add(clean_url)
+            title = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip() or clean_url
+            rows.append(substack_row_from_url(clean_url, title=title))
+            if len(rows) >= limit:
+                return rows
+    return rows
+
+
+def _search_substack_bing_rss(search_query, seen=None, limit=10):
+    seen = seen if seen is not None else set()
+    try:
+        response = requests.get(
+            "https://www.bing.com/search",
+            params={"format": "rss", "q": search_query},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        root = ET.fromstring(response.text)
+    except Exception as exc:
+        print(f"[!] Error searching Substack via Bing RSS fallback: {exc}")
         return []
-    return parse_substack_search(html, search_url, query=query)
+
+    rows = []
+    channel = root.find("channel")
+    if channel is None:
+        return rows
+    for item in channel.findall("item"):
+        link = (item.findtext("link", default="") or "").strip()
+        title = re.sub(r"\s+", " ", item.findtext("title", default="")).strip()
+        try:
+            parsed = urllib.parse.urlparse(link)
+        except ValueError:
+            continue
+        host = parsed.netloc.lower()
+        path = parsed.path
+        is_item = (
+            host.endswith(".substack.com") and ("/p/" in path or "/note/" in path)
+        ) or (
+            host == "substack.com" and re.search(r"/@[^/]+/(?:p|note)/", path)
+        )
+        if not is_item:
+            continue
+        clean_url = urllib.parse.urlunparse(parsed._replace(fragment=""))
+        if clean_url in seen:
+            continue
+        seen.add(clean_url)
+        rows.append(substack_row_from_url(clean_url, title=title or clean_url))
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 def _substack_direct_item_url(query):
