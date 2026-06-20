@@ -83,6 +83,49 @@ PUBLIC_COLLECTOR_QUERIES = [
     "ethics public domain",
 ]
 
+AUTO_COLLECTION_QUERIES = [
+    "public domain collected works",
+    "public domain complete works",
+    "public domain essays",
+    "public domain letters",
+    "public domain lectures",
+    "public domain social theory",
+    "public domain political theory",
+    "public domain science fiction",
+    "public domain philosophy primary texts",
+    "public domain labor movement history",
+    "public domain revolutionary history",
+    "public domain literary criticism",
+]
+
+AUTO_CATEGORY_QUERIES = {
+    "anarchism": [
+        "classical anarchism primary texts",
+        "anarchist pamphlets public domain",
+        "libertarian socialist public domain",
+    ],
+    "philosophy": [
+        "ethics public domain philosophy",
+        "metaphysics public domain",
+        "epistemology public domain",
+    ],
+    "political_economy": [
+        "political economy public domain",
+        "labor capital property public domain",
+        "economics public domain theory",
+    ],
+    "history": [
+        "historical accounts public domain",
+        "revolution history public domain",
+        "19th century history public domain",
+    ],
+    "literature": [
+        "public domain novels",
+        "public domain poetry",
+        "public domain drama",
+    ],
+}
+
 DEFAULT_PUBLIC_SOURCES = (
     "archive_org",
     "anarchist_library",
@@ -675,6 +718,61 @@ def _load_queries(args):
     return queries
 
 
+def _dedupe_queries(queries):
+    seen = set()
+    deduped = []
+    for query in queries:
+        normalized = " ".join(str(query or "").split())
+        key = normalized.casefold()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
+
+
+def _rotated(items, offset):
+    if not items:
+        return []
+    offset = offset % len(items)
+    return list(items[offset:]) + list(items[:offset])
+
+
+def build_auto_queries(limit=12, cycle=1, extra_queries=None):
+    """Build a rotating, corpus-aware batch of autonomous collection queries."""
+    limit = max(1, int(limit or 1))
+    queries = []
+
+    try:
+        categories = db.get_categories(include_counts=True)
+    except Exception as exc:
+        print(f"[!] Could not inspect category coverage for auto mode: {exc}")
+        categories = []
+
+    sparse_categories = sorted(
+        [
+            category
+            for category in categories
+            if category.get("name") in AUTO_CATEGORY_QUERIES
+        ],
+        key=lambda category: (
+            int(category.get("count") or 0),
+            int(category.get("chars") or 0),
+            str(category.get("name")),
+        ),
+    )
+    for category in sparse_categories:
+        category_queries = AUTO_CATEGORY_QUERIES.get(category["name"], [])
+        queries.extend(_rotated(category_queries, cycle - 1)[:2])
+
+    queries.extend(_rotated(AUTO_COLLECTION_QUERIES, cycle - 1))
+    queries.extend(_rotated(PUBLIC_COLLECTOR_QUERIES, cycle - 1))
+    if extra_queries:
+        queries.extend(extra_queries)
+
+    return _dedupe_queries(queries)[:limit]
+
+
 def _collect_phase(name, fn):
     try:
         return fn(), None
@@ -788,6 +886,35 @@ def handle_collect(args):
                 args.error_sleep_seconds * max(1, consecutive_error_cycles),
             )
             print(f"[!] Collection cycle had {len(errors)} error(s); backing off for {sleep_seconds}s.")
+        _sleep_interruptibly(sleep_seconds)
+
+
+def handle_auto(args):
+    cycle = 0
+    consecutive_error_cycles = 0
+    extra_queries = _load_queries(args) if args.queries_file or args.query else []
+    while True:
+        cycle += 1
+        queries = build_auto_queries(
+            limit=args.query_limit,
+            cycle=cycle,
+            extra_queries=extra_queries,
+        )
+        errors = _run_collect_cycle(args, queries, cycle)
+        if errors:
+            consecutive_error_cycles += 1
+        else:
+            consecutive_error_cycles = 0
+
+        if args.once:
+            break
+        sleep_seconds = args.sleep_seconds
+        if errors:
+            sleep_seconds = min(
+                args.max_error_sleep_seconds,
+                args.error_sleep_seconds * max(1, consecutive_error_cycles),
+            )
+            print(f"[!] Auto cycle had {len(errors)} error(s); backing off for {sleep_seconds}s.")
         _sleep_interruptibly(sleep_seconds)
 
 def handle_process(args):
@@ -977,6 +1104,34 @@ def main():
     parser_collect.add_argument("--per-domain-limit", type=int, help="Maximum files assigned to each domain worker per cycle.")
     parser_collect.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
 
+    # Autonomous Agent-Led Collection Command
+    parser_auto = subparsers.add_parser("auto", help="Continuously expand the data lake using rotating, corpus-aware public-work queries.")
+    parser_auto.add_argument("--query", action="append", help="Additional standing query to include. Can be repeated.")
+    parser_auto.add_argument("--queries-file", help="Newline-delimited standing queries. Blank lines and # comments are ignored.")
+    parser_auto.add_argument(
+        "--sources",
+        nargs="+",
+        choices=ALL_SOURCES,
+        default=DEFAULT_PUBLIC_SOURCES,
+        help="Sources to query. Defaults to public-source collection only.",
+    )
+    parser_auto.add_argument("--once", action="store_true", help="Run one autonomous cycle and exit.")
+    parser_auto.add_argument("--query-limit", type=int, default=12, help="Maximum auto-selected queries per cycle.")
+    parser_auto.add_argument("--sleep-seconds", type=int, default=1800, help="Delay between autonomous cycles.")
+    parser_auto.add_argument("--error-sleep-seconds", type=int, default=300, help="Delay after a cycle with errors.")
+    parser_auto.add_argument("--max-error-sleep-seconds", type=int, default=3600, help="Maximum delay after repeated error cycles.")
+    parser_auto.add_argument("--download-limit", type=int, default=100, help="Maximum files to download per cycle.")
+    parser_auto.add_argument("--process-limit", type=int, default=100, help="Maximum downloads to process per cycle.")
+    parser_auto.add_argument("--archive-raw-limit", type=int, default=50, help="Retry this many pending raw S3 archives per cycle. Use 0 to disable.")
+    parser_auto.add_argument("--raw-bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR, help="Filesystem-backed raw bucket directory.")
+    parser_auto.add_argument("--quarantine-dir", default=downloader.DEFAULT_QUARANTINE_BUCKET_DIR, help="Filesystem-backed quarantine bucket directory.")
+    parser_auto.add_argument("--text-bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")
+    parser_auto.add_argument("--rps", type=float, default=0.2, help="Per-domain download requests per second.")
+    parser_auto.add_argument("--max-mb", type=int, default=250, help="Maximum size per file in MB. Use 0 for no limit.")
+    parser_auto.add_argument("--max-domains", type=int, help="Maximum domain workers per download phase.")
+    parser_auto.add_argument("--per-domain-limit", type=int, help="Maximum files assigned to each domain worker per cycle.")
+    parser_auto.add_argument("--extractor", default=processor.EXTRACTOR_VERSION, help="Extractor version label for idempotent processing.")
+
     # Corpus Command
     parser_corpus = subparsers.add_parser("corpus", help="Build an immutable corpus manifest from processed plaintext.")
     parser_corpus.add_argument("name", help="Name for this corpus recipe.")
@@ -1034,6 +1189,8 @@ def main():
         handle_archive_raw(args)
     elif args.command == "collect":
         handle_collect(args)
+    elif args.command == "auto":
+        handle_auto(args)
     elif args.command == "corpus":
         handle_corpus(args)
     elif args.command == "dashboard":

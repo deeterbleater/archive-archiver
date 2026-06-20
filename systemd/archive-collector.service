@@ -10,7 +10,7 @@ WorkingDirectory=/root/archive-archiver
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/root/archive-archiver/.env
 ExecStartPre=/usr/bin/mkdir -p /root/archive-archiver/logs
-ExecStart=/root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py --max-results 2 collect --sleep-seconds 21600 --error-sleep-seconds 300 --max-error-sleep-seconds 3600 --download-limit 50 --process-limit 50 --archive-raw-limit 25 --max-domains 4 --per-domain-limit 3 --rps 0.05 --sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins
+ExecStart=/root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py --max-results 2 auto --query-limit 12 --sleep-seconds 1800 --error-sleep-seconds 300 --max-error-sleep-seconds 3600 --download-limit 50 --process-limit 50 --archive-raw-limit 25 --max-domains 4 --per-domain-limit 3 --rps 0.05 --sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins
 Restart=always
 RestartSec=30
 TimeoutStartSec=120

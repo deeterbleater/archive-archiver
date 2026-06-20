@@ -64,6 +64,31 @@ class CollectResilienceTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         process.assert_called_once()
 
+    def test_auto_queries_prioritize_sparse_categories(self):
+        categories = [
+            {"name": "literature", "count": 50, "chars": 1000},
+            {"name": "philosophy", "count": 0, "chars": 0},
+            {"name": "history", "count": 2, "chars": 200},
+        ]
+
+        with mock.patch("cli.db.get_categories", return_value=categories):
+            queries = cli.build_auto_queries(limit=5, cycle=1, extra_queries=["Asimov public domain"])
+
+        self.assertIn("ethics public domain philosophy", queries)
+        self.assertIn("metaphysics public domain", queries)
+        self.assertIn("historical accounts public domain", queries)
+
+    def test_auto_runs_one_dynamic_cycle(self):
+        args = collect_args(query=None)
+        args.query_limit = 3
+
+        with mock.patch("cli.build_auto_queries", return_value=["alpha", "beta"]) as planner:
+            with mock.patch("cli._run_collect_cycle", return_value=[]) as run_cycle:
+                cli.handle_auto(args)
+
+        planner.assert_called_once()
+        run_cycle.assert_called_once_with(args, ["alpha", "beta"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

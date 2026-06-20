@@ -44,6 +44,7 @@ SLASH_COMMANDS = {
     "/validate-texts": "validate_texts",
     "/archive-raw": "archive_raw",
     "/cycle": "cycle",
+    "/auto": "auto",
     "/corpus": "corpus",
     "/memory": "memory",
     "/remember": "remember",
@@ -69,7 +70,7 @@ When the user asks to add a new archive, call add_archive with its base URL and 
 You may use Rich terminal markup tags in normal assistant replies: [highlight]important[/highlight], [success]done[/success], [warning]watch this[/warning], [danger]problem[/danger], [muted]quiet detail[/muted], [tool]tool name[/tool]. The default highlight color is pond-scum green via [highlight]...[/highlight]. Use tags sparingly and never wrap JSON tool arguments in markup.
 For long tasks, keep working through tool calls until the requested task is complete, stalled, or blocked by a clear error. Report concrete counts and stopping reason.
 For explicit /goal work, set an estimated completion timer and call finish_goal only when the objective is complete or clearly blocked.
-Slash commands such as /status, /search, /download, /process, /validate-texts, /archive-raw, /cycle, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
+Slash commands such as /status, /search, /download, /process, /validate-texts, /archive-raw, /cycle, /auto, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
 """.strip()
 MAX_TOOL_ITERATIONS = 12
 MAX_GOAL_TOOL_ITERATIONS = 20
@@ -643,6 +644,7 @@ Slash commands:
   /validate-texts [--limit N] [--workers N]
   /archive-raw [--limit N]
   /cycle [--query QUERY]
+  /auto [--query-limit N] [--sleep-seconds N]
   /corpus NAME [--query TEXT]
   /memory [--limit N] [--search TEXT]
   /remember TEXT
@@ -1126,6 +1128,34 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             sleep_seconds=0,
         ))
 
+    def do_auto(self, line):
+        """Continuously expand the data lake: auto [--query-limit N] [--sleep-seconds N]."""
+        parser = _parser("auto")
+        parser.add_argument("--query", action="append")
+        parser.add_argument("--queries-file")
+        parser.add_argument("--sources", nargs="+", choices=self.cli.ALL_SOURCES, default=self.config["sources"])
+        parser.add_argument("--once", action="store_true")
+        parser.add_argument("--query-limit", type=int, default=12)
+        parser.add_argument("--sleep-seconds", type=int, default=1800)
+        parser.add_argument("--error-sleep-seconds", type=int, default=300)
+        parser.add_argument("--max-error-sleep-seconds", type=int, default=3600)
+        parser.add_argument("--max-results", type=int, default=self.config["max_results"])
+        parser.add_argument("--download-limit", type=int, default=max(self.config["download_limit"], 100))
+        parser.add_argument("--process-limit", type=int, default=max(self.config["process_limit"], 100))
+        parser.add_argument("--archive-raw-limit", type=int, default=50)
+        parser.add_argument("--raw-bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR)
+        parser.add_argument("--quarantine-dir", default=downloader.DEFAULT_QUARANTINE_BUCKET_DIR)
+        parser.add_argument("--text-bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR)
+        parser.add_argument("--rps", type=float, default=self.config["rps"])
+        parser.add_argument("--max-mb", type=int, default=self.config["max_mb"])
+        parser.add_argument("--max-domains", type=int, default=self.config["max_domains"])
+        parser.add_argument("--per-domain-limit", type=int, default=self.config["per_domain_limit"])
+        parser.add_argument("--extractor", default=processor.EXTRACTOR_VERSION)
+        args = self._run_parser(parser, line)
+        if not args:
+            return
+        self.cli.handle_auto(self._namespace(**vars(args)))
+
     def do_corpus(self, line):
         """Build a corpus: corpus NAME [--query TEXT] [--ordering title|hash|created|random]."""
         parser = _parser("corpus")
@@ -1160,6 +1190,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             ("/validate-texts", "Validate plaintext quality and reject unreadable text."),
             ("/archive-raw", "Upload processed raw originals to object storage."),
             ("/cycle", "Run one discover-download-process cycle."),
+            ("/auto", "Continuously expand the data lake from sparse categories and rotating seeds."),
             ("/corpus NAME", "Build a deterministic corpus manifest and text bundle."),
             ("/memory", "Read saved command and note context logs."),
             ("/remember TEXT", "Save an operator note into context memory."),

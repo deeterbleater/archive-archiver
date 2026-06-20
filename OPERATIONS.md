@@ -72,10 +72,14 @@ Current command:
 
 ```sh
 /root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py \
-  --max-results 2 collect \
-  --sleep-seconds 21600 \
+  --max-results 2 auto \
+  --query-limit 12 \
+  --sleep-seconds 1800 \
+  --error-sleep-seconds 300 \
+  --max-error-sleep-seconds 3600 \
   --download-limit 50 \
   --process-limit 50 \
+  --archive-raw-limit 25 \
   --max-domains 4 \
   --per-domain-limit 3 \
   --rps 0.05 \
@@ -84,10 +88,16 @@ Current command:
 
 Important behavior:
 
-- `--sleep-seconds 21600`: one cycle every 6 hours.
+- `auto`: continuously expands the data lake from sparse categories and
+  rotating public-domain query seeds.
+- `--query-limit 12`: up to twelve auto-selected search queries per cycle.
+- `--sleep-seconds 1800`: one cycle every 30 minutes.
+- `--error-sleep-seconds 300`: short backoff after a cycle with recoverable
+  phase errors.
 - `--max-domains 4`: up to four domain workers in a download phase.
 - `--per-domain-limit 3`: at most three files per domain per cycle.
 - `--rps 0.05`: one request every 20 seconds per domain.
+- `--archive-raw-limit 25`: retries S3 raw-original archival every cycle.
 - `--sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins`: includes the high-yield book archives and configured plugin registry in the autonomous collector.
 - Use `--sources arxiv` for arXiv PDF discovery. Use `--sources substack`
   with a normal topic for public Substack search, or with

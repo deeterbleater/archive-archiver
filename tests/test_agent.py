@@ -102,6 +102,21 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(captured["workers"], 2)
         self.assertTrue(captured["no_llm"])
 
+    def test_auto_slash_command_dispatches_to_cli(self):
+        captured = {}
+
+        def fake_auto(args):
+            captured.update(vars(args))
+
+        with mock.patch.object(self.shell.cli, "handle_auto", side_effect=fake_auto):
+            result, _output = self._run("/auto --once --query-limit 4 --sleep-seconds 9 --download-limit 11")
+
+        self.assertIsNone(result)
+        self.assertTrue(captured["once"])
+        self.assertEqual(captured["query_limit"], 4)
+        self.assertEqual(captured["sleep_seconds"], 9)
+        self.assertEqual(captured["download_limit"], 11)
+
     def test_exit_kills_managed_tmux_session(self):
         with mock.patch.dict(os.environ, {"ALGE_TMUX_MANAGED": "1", "ALGE_TMUX_SESSION": "alge-test", "TMUX": "/tmp/tmux"}):
             with mock.patch("agent.subprocess.Popen") as popen:
