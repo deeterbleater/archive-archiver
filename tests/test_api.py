@@ -4,6 +4,7 @@ from pathlib import Path
 
 import archive_plugins
 import db
+import text_munger
 
 
 class ApiTests(unittest.TestCase):
@@ -233,6 +234,32 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["text"], "First line o")
         self.assertTrue(payload["truncated"])
         self.assertEqual(payload["preview_chars"], 12)
+
+    def test_text_review_endpoint_can_return_munged_variant(self):
+        self._add_fixture()
+        row = self.api.list_texts(q="fixture", category="philosophy", limit=50, offset=0)[0]
+        source_path = Path(row["text_uri"].replace("file://", ""))
+        munged_path = Path(self.tempdir.name) / "munged.txt"
+        munged_path.write_text("Munged training text.\n", encoding="utf-8")
+        db.mark_text_munge_succeeded(
+            extraction_id=row["extraction_id"],
+            munger_version=text_munger.MUNGER_VERSION,
+            source_text_sha256=row["text_sha256"],
+            munged_text_uri=munged_path.resolve().as_uri(),
+            munged_text_sha256="munged-sha",
+            char_count=len("Munged training text."),
+            rules_json="[]",
+            stats_json='{"cleaned_chars":21}',
+        )
+
+        rows = self.api.list_texts(q="fixture", category="philosophy", limit=50, offset=0)
+        payload = self.api.get_text(row["extraction_id"], max_chars=200, variant="munged")
+
+        self.assertTrue(rows[0]["has_munged"])
+        self.assertEqual(rows[0]["munged_char_count"], len("Munged training text."))
+        self.assertEqual(payload["text_variant"], "munged")
+        self.assertEqual(payload["text"], "Munged training text.\n")
+        self.assertNotEqual(source_path.read_text(encoding="utf-8"), payload["text"])
 
     def test_text_search_endpoint_uses_full_text_index_and_snippets(self):
         self._add_text_fixture(

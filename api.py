@@ -652,6 +652,12 @@ def list_texts(
             extractions.char_count,
             extractions.text_sha256,
             extractions.text_uri,
+            CASE WHEN text_munges.id IS NULL THEN 0 ELSE 1 END AS has_munged,
+            text_munges.munged_text_sha256,
+            text_munges.munged_text_uri,
+            text_munges.char_count AS munged_char_count,
+            text_munges.model AS munged_model,
+            text_munges.processed_at AS munged_processed_at,
             extractions.warnings,
             extractions.error,
             COALESCE(extractions.quality_status, 'unvalidated') AS quality_status,
@@ -685,6 +691,9 @@ def list_texts(
         JOIN downloads ON downloads.id = extractions.download_id
         JOIN files ON files.id = downloads.file_id
         JOIN works ON works.id = files.work_id
+        LEFT JOIN text_munges ON text_munges.extraction_id = extractions.id
+            AND text_munges.munger_version = 'text-munger.v1'
+            AND text_munges.status = 'processed'
         {where}
         ORDER BY extractions.updated_at DESC, extractions.id DESC
         LIMIT ? OFFSET ?
@@ -723,6 +732,7 @@ def search_texts(
 def get_text(
     extraction_id: int,
     max_chars: int = Query(60_000, ge=1, le=MAX_TEXT_PREVIEW_CHARS),
+    variant: str = Query("raw", pattern="^(raw|munged)$"),
 ):
     row = _one("""
         SELECT
@@ -734,6 +744,14 @@ def get_text(
             extractions.char_count,
             extractions.text_sha256,
             extractions.text_uri,
+            CASE WHEN text_munges.id IS NULL THEN 0 ELSE 1 END AS has_munged,
+            text_munges.munged_text_sha256,
+            text_munges.munged_text_uri,
+            text_munges.char_count AS munged_char_count,
+            text_munges.rules_json AS munged_rules_json,
+            text_munges.stats_json AS munged_stats_json,
+            text_munges.model AS munged_model,
+            text_munges.processed_at AS munged_processed_at,
             extractions.warnings,
             extractions.error,
             COALESCE(extractions.quality_status, 'unvalidated') AS quality_status,
@@ -766,15 +784,24 @@ def get_text(
         JOIN downloads ON downloads.id = extractions.download_id
         JOIN files ON files.id = downloads.file_id
         JOIN works ON works.id = files.work_id
+        LEFT JOIN text_munges ON text_munges.extraction_id = extractions.id
+            AND text_munges.munger_version = 'text-munger.v1'
+            AND text_munges.status = 'processed'
         WHERE extractions.id = ?
     """, (extraction_id,))
     if not row:
         raise HTTPException(status_code=404, detail="text extraction not found")
     text = ""
     truncated = False
-    if row.get("status") == "processed" and row.get("text_uri"):
-        text, truncated = _read_text_uri(row["text_uri"], max_chars=max_chars)
+    text_uri = row.get("text_uri")
+    if variant == "munged":
+        if not row.get("munged_text_uri"):
+            raise HTTPException(status_code=404, detail="munged text artifact not found for this extraction")
+        text_uri = row["munged_text_uri"]
+    if row.get("status") == "processed" and text_uri:
+        text, truncated = _read_text_uri(text_uri, max_chars=max_chars)
     row["text"] = text
+    row["text_variant"] = variant
     row["preview_chars"] = len(text)
     row["truncated"] = truncated
     return row
