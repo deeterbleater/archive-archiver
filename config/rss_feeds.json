@@ -1,0 +1,10 @@
+{
+  "feeds": [
+    {
+      "name": "Project Gutenberg Recently Added",
+      "url": "https://www.gutenberg.org/cache/epub/feeds/today.rss",
+      "trust_level": "trusted",
+      "enabled": true
+    }
+  ]
+}

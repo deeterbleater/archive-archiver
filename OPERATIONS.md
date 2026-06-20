@@ -112,6 +112,31 @@ systemctl stop archive-collector.service
 tail -f /root/archive-archiver/logs/collector.log
 ```
 
+### RSS ingest cron
+
+Feed list:
+
+```sh
+/root/archive-archiver/config/rss_feeds.json
+```
+
+Run once manually:
+
+```sh
+python cli.py rss-ingest --limit-per-feed 50
+/root/archive-archiver/bin/alge --no-tmux -c "/rss-ingest --limit-per-feed 50"
+```
+
+Install the hourly cron job:
+
+```sh
+cp /root/archive-archiver/systemd/alge-rss-ingest.cron /etc/cron.d/alge-rss-ingest
+```
+
+The cron job runs at minute 7 every hour and appends logs to
+`logs/rss_ingest.log`. Each feed item is deduped by `(feed_url, item_id)` in
+the `rss_feed_items` table before adding normal `works` and `files` rows.
+
 ### Visualization API
 
 Service name:

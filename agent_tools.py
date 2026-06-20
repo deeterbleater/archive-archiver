@@ -18,6 +18,7 @@ import downloader
 import goals
 import processor
 import requests
+import rss_ingest
 import terminal_theme
 from bs4 import BeautifulSoup
 
@@ -224,6 +225,22 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "rss_ingest",
+            "description": "Archive configured RSS/Atom feed items into the normal download backlog with feed-item dedupe.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "feeds_file": {"type": "string"},
+                    "limit_per_feed": {"type": "integer", "minimum": 1, "maximum": 500},
+                    "dry_run": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_backlog_until_done",
             "description": "Continuously download pending works, process downloaded files, and optionally archive raw originals until no actionable backlog remains or progress stalls.",
             "parameters": {
@@ -312,6 +329,7 @@ class AppToolRunner:
             "download": self.download,
             "process": self.process,
             "archive_raw": self.archive_raw,
+            "rss_ingest": self.rss_ingest,
             "run_backlog_until_done": self.run_backlog_until_done,
             "build_corpus": self.build_corpus,
             "set_goal_timer": self.set_goal_timer,
@@ -747,6 +765,14 @@ class AppToolRunner:
         results = processor.archive_processed_raws(
             limit=limit or self.shell.config["process_limit"],
             delete_local=not keep_local,
+        )
+        return {"ok": True, "results": results, "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
+
+    def rss_ingest(self, feeds_file=None, limit_per_feed=None, dry_run=False):
+        results = rss_ingest.ingest_feeds(
+            path=feeds_file or rss_ingest.DEFAULT_FEEDS_PATH,
+            limit_per_feed=limit_per_feed or rss_ingest.DEFAULT_LIMIT_PER_FEED,
+            dry_run=bool(dry_run),
         )
         return {"ok": True, "results": results, "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
 

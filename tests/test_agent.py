@@ -117,6 +117,20 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(captured["sleep_seconds"], 9)
         self.assertEqual(captured["download_limit"], 11)
 
+    def test_rss_ingest_slash_command_dispatches_to_cli(self):
+        captured = {}
+
+        def fake_rss(args):
+            captured.update(vars(args))
+
+        with mock.patch.object(self.shell.cli, "handle_rss_ingest", side_effect=fake_rss):
+            result, _output = self._run("/rss-ingest --feeds-file feeds.json --limit-per-feed 5 --dry-run")
+
+        self.assertIsNone(result)
+        self.assertEqual(captured["feeds_file"], "feeds.json")
+        self.assertEqual(captured["limit_per_feed"], 5)
+        self.assertTrue(captured["dry_run"])
+
     def test_exit_kills_managed_tmux_session(self):
         with mock.patch.dict(os.environ, {"ALGE_TMUX_MANAGED": "1", "ALGE_TMUX_SESSION": "alge-test", "TMUX": "/tmp/tmux"}):
             with mock.patch("agent.subprocess.Popen") as popen:
@@ -142,6 +156,19 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(result["reason"], "complete")
         self.assertEqual(result["backlog"]["pending_downloads"], 0)
         self.assertEqual(result["backlog"]["pending_extractions"], 0)
+
+    def test_rss_ingest_tool_dispatches_to_module(self):
+        runner = agent_tools.AppToolRunner(self.shell)
+
+        with mock.patch("agent_tools.rss_ingest.ingest_feeds", return_value={"feeds": 1, "archived": 2}) as ingest:
+            result = runner.execute("rss_ingest", {"feeds_file": "feeds.json", "limit_per_feed": 5, "dry_run": True})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["results"]["archived"], 2)
+        ingest.assert_called_once()
+        self.assertEqual(str(ingest.call_args.kwargs["path"]), "feeds.json")
+        self.assertEqual(ingest.call_args.kwargs["limit_per_feed"], 5)
+        self.assertTrue(ingest.call_args.kwargs["dry_run"])
 
     def test_goal_command_creates_durable_goal(self):
         result, output = self._run("/goal Find everything about Thelema")

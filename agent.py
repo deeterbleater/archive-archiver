@@ -43,6 +43,7 @@ SLASH_COMMANDS = {
     "/process": "process",
     "/validate-texts": "validate_texts",
     "/archive-raw": "archive_raw",
+    "/rss-ingest": "rss_ingest",
     "/cycle": "cycle",
     "/auto": "auto",
     "/corpus": "corpus",
@@ -62,7 +63,7 @@ MODEL_PAGE_SIZE = 20
 
 SYSTEM_PROMPT = """
 You are ALGE, a terminal-native archive operations assistant inside the archive-archiver project.
-You can talk normally and you also have tools that operate the archive app: status, backlog, web_search, search, ingest_url, add_archive, research, download, process, archive_raw, run_backlog_until_done, build_corpus, set_goal_timer, and finish_goal.
+You can talk normally and you also have tools that operate the archive app: status, backlog, web_search, search, ingest_url, add_archive, research, download, process, archive_raw, rss_ingest, run_backlog_until_done, build_corpus, set_goal_timer, and finish_goal.
 Use tools when the user asks you to perform app work. For example, "download all backlogged works and process them" should call run_backlog_until_done.
 The archive search tool is asynchronous: it starts one background batch per archive source and returns immediately. Use status or backlog to inspect background_batches before deciding that a search has finished.
 When the user gives a broad archival goal, use web_search to discover terminology, related people, source domains, and query expansions, then use archive search tools and the full download/process/archive workflow.
@@ -70,7 +71,7 @@ When the user asks to add a new archive, call add_archive with its base URL and 
 You may use Rich terminal markup tags in normal assistant replies: [highlight]important[/highlight], [success]done[/success], [warning]watch this[/warning], [danger]problem[/danger], [muted]quiet detail[/muted], [tool]tool name[/tool]. The default highlight color is pond-scum green via [highlight]...[/highlight]. Use tags sparingly and never wrap JSON tool arguments in markup.
 For long tasks, keep working through tool calls until the requested task is complete, stalled, or blocked by a clear error. Report concrete counts and stopping reason.
 For explicit /goal work, set an estimated completion timer and call finish_goal only when the objective is complete or clearly blocked.
-Slash commands such as /status, /search, /download, /process, /validate-texts, /archive-raw, /cycle, /auto, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
+Slash commands such as /status, /search, /download, /process, /validate-texts, /archive-raw, /rss-ingest, /cycle, /auto, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
 """.strip()
 MAX_TOOL_ITERATIONS = 12
 MAX_GOAL_TOOL_ITERATIONS = 20
@@ -643,6 +644,7 @@ Slash commands:
   /process [--limit N]
   /validate-texts [--limit N] [--workers N]
   /archive-raw [--limit N]
+  /rss-ingest [--limit-per-feed N]
   /cycle [--query QUERY]
   /auto [--query-limit N] [--sleep-seconds N]
   /corpus NAME [--query TEXT]
@@ -1102,6 +1104,18 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             return
         self.cli.handle_archive_raw(self._namespace(**vars(args)))
 
+    def do_rss_ingest(self, line):
+        """Archive configured RSS feed items: /rss-ingest [--limit-per-feed N]."""
+        parser = _parser("rss-ingest")
+        parser.add_argument("--feeds-file", default=str(self.cli.rss_ingest.DEFAULT_FEEDS_PATH))
+        parser.add_argument("--limit-per-feed", type=int, default=self.cli.rss_ingest.DEFAULT_LIMIT_PER_FEED)
+        parser.add_argument("--timeout", type=int, default=self.cli.rss_ingest.DEFAULT_TIMEOUT_SECONDS)
+        parser.add_argument("--dry-run", action="store_true")
+        args = self._run_parser(parser, line)
+        if not args:
+            return
+        self.cli.handle_rss_ingest(self._namespace(**vars(args)))
+
     def do_cycle(self, line):
         """Run one discover-download-process cycle: cycle [--query QUERY] [--download-limit N]."""
         parser = _parser("cycle")
@@ -1189,6 +1203,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             ("/process", "Extract plaintext from downloaded files."),
             ("/validate-texts", "Validate plaintext quality and reject unreadable text."),
             ("/archive-raw", "Upload processed raw originals to object storage."),
+            ("/rss-ingest", "Archive configured RSS/Atom feed items into the backlog."),
             ("/cycle", "Run one discover-download-process cycle."),
             ("/auto", "Continuously expand the data lake from sparse categories and rotating seeds."),
             ("/corpus NAME", "Build a deterministic corpus manifest and text bundle."),

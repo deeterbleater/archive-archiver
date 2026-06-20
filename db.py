@@ -329,6 +329,20 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS rss_feed_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        feed_url TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        item_url TEXT,
+        work_id INTEGER,
+        first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        archived_at TIMESTAMP,
+        UNIQUE(feed_url, item_id),
+        FOREIGN KEY (work_id) REFERENCES works (id) ON DELETE SET NULL
+    )
+    """)
+
     _ensure_column(cursor, "downloads", "final_url", "TEXT")
     _ensure_column(cursor, "downloads", "etag", "TEXT")
     _ensure_column(cursor, "downloads", "last_modified", "TEXT")
@@ -689,6 +703,34 @@ def add_file(work_id, site, format, url, file_size=None, download_source=None, d
     
     conn.commit()
     conn.close()
+
+
+def rss_item_seen(feed_url, item_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT 1 FROM rss_feed_items WHERE feed_url = ? AND item_id = ? LIMIT 1",
+        (str(feed_url), str(item_id)),
+    )
+    found = cursor.fetchone() is not None
+    conn.close()
+    return found
+
+
+def mark_rss_item_archived(feed_url, item_id, item_url=None, work_id=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO rss_feed_items (feed_url, item_id, item_url, work_id, archived_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(feed_url, item_id) DO UPDATE SET
+        item_url = COALESCE(excluded.item_url, rss_feed_items.item_url),
+        work_id = COALESCE(excluded.work_id, rss_feed_items.work_id),
+        archived_at = COALESCE(rss_feed_items.archived_at, CURRENT_TIMESTAMP)
+    """, (str(feed_url), str(item_id), item_url, work_id))
+    conn.commit()
+    conn.close()
+
 
 def get_stats():
     """Returns database statistics."""

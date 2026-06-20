@@ -1,0 +1,5 @@
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Ingest configured RSS/Atom feeds hourly. cli.py loads /root/archive-archiver/.env.
+7 * * * * root cd /root/archive-archiver && /root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py rss-ingest --limit-per-feed 50 >> /root/archive-archiver/logs/rss_ingest.log 2>&1

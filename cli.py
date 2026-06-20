@@ -67,6 +67,7 @@ import processor
 import corpus
 import agent
 import dashboard
+import rss_ingest
 import terminal_theme
 import text_validator
 
@@ -961,6 +962,19 @@ def handle_archive_raw(args):
         print(f"{status}: {count}")
     print("=================================================")
 
+
+def handle_rss_ingest(args):
+    results = rss_ingest.ingest_feeds(
+        path=args.feeds_file,
+        limit_per_feed=args.limit_per_feed,
+        dry_run=args.dry_run,
+        timeout=args.timeout,
+    )
+    print("\n================ RSS INGEST SUMMARY =============")
+    for status, count in results.items():
+        print(f"{status}: {count}")
+    print("=================================================")
+
 def handle_corpus(args):
     try:
         result = corpus.build_corpus(
@@ -1077,6 +1091,13 @@ def main():
     parser_archive_raw.add_argument("--limit", type=int, default=10, help="Maximum processed raw downloads to archive.")
     parser_archive_raw.add_argument("--keep-local", action="store_true", help="Keep local raw files after successful upload.")
 
+    # RSS Ingest Command
+    parser_rss = subparsers.add_parser("rss-ingest", help="Archive configured RSS/Atom feed items into the download backlog.")
+    parser_rss.add_argument("--feeds-file", default=str(rss_ingest.DEFAULT_FEEDS_PATH), help="JSON feed list to ingest.")
+    parser_rss.add_argument("--limit-per-feed", type=int, default=rss_ingest.DEFAULT_LIMIT_PER_FEED, help="Maximum items to ingest per feed.")
+    parser_rss.add_argument("--timeout", type=int, default=rss_ingest.DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout per feed.")
+    parser_rss.add_argument("--dry-run", action="store_true", help="Parse feeds and report items without writing DB rows.")
+
     # Autonomous Collection Command
     parser_collect = subparsers.add_parser("collect", help="Autonomously discover, download, and process public works.")
     parser_collect.add_argument("--query", action="append", help="Additional query to include. Can be repeated.")
@@ -1187,6 +1208,8 @@ def main():
         handle_validate_texts(args)
     elif args.command == "archive-raw":
         handle_archive_raw(args)
+    elif args.command == "rss-ingest":
+        handle_rss_ingest(args)
     elif args.command == "collect":
         handle_collect(args)
     elif args.command == "auto":
