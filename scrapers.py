@@ -39,6 +39,15 @@ ANNA_STUB_PATH_RE = re.compile(
     r"^/(?:md5|view|search|datasets|torrents|member_codes|fast_download_not_member)(?:/|$)",
     re.IGNORECASE,
 )
+LIBGEN_MIRROR_PRIORITY = {
+    "libgen get": 0,
+    "ipfs cloudflare": 1,
+    "ipfs.io": 2,
+    "pinata ipfs": 3,
+    "tor": 4,
+    "libgen.is 1000 torrent": 9,
+    "pilimi torrent": 10,
+}
 
 def get_headers():
     return {
@@ -287,6 +296,192 @@ def parse_annas_detail_page(html, detail_url):
             "download_url": full_url,
             "trust_level": "untrusted",
         })
+    if not files:
+        return None
+    return {"title": title, "author": author, "files": files}
+
+
+def _libgen_label_value(soup, label):
+    wanted = label.lower().rstrip(":")
+    for strong in soup.find_all("strong"):
+        text = re.sub(r"\s+", " ", strong.get_text(" ", strip=True)).strip()
+        if text.lower().rstrip(":") != wanted:
+            continue
+        parent = strong.parent
+        if not parent:
+            continue
+        value = re.sub(r"\s+", " ", parent.get_text(" ", strip=True)).strip()
+        value = re.sub(rf"^{re.escape(text)}\s*", "", value, flags=re.IGNORECASE).strip()
+        return value or None
+    return None
+
+
+def _libgen_title_from_document(soup):
+    title = _libgen_label_value(soup, "Title")
+    if title:
+        return title
+    if soup.title and soup.title.string:
+        text = re.sub(r"\s+", " ", soup.title.string).strip()
+        text = re.sub(r"^LG\+:\s*", "", text)
+        text = re.sub(r"\{[0-9]+\}(?:\s+libgen\.[^. ]+\.[A-Za-z0-9]+)?$", "", text).strip()
+        text = re.sub(r"\{[^{}]{1,240}\}\([^)]+\)$", "", text).strip()
+        return text or None
+    return None
+
+
+def _libgen_author_from_document(soup):
+    author = _libgen_label_value(soup, "Author(s)")
+    if author:
+        return author
+    if soup.title and soup.title.string:
+        match = re.search(r"\{([^{}]+)\}\([^)]+\)\{[0-9]+\}", soup.title.string)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _libgen_file_size_from_text(text):
+    match = re.search(
+        r"\bSize:\s*([0-9][0-9.,]*\s*(?:B|KB|MB|GB)(?:\s*\([^)]+\))?)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(r"\bFilesize:\s*([0-9][0-9.,]*\s*(?:B|KB|MB|GB)(?:\s*\([^)]+\))?)", text, re.IGNORECASE)
+    return match.group(1).strip() if match else "Unknown"
+
+
+def _libgen_format_from_text(text, url=None):
+    match = re.search(r"\b(?:Ext\.|Extension):\s*([A-Za-z0-9]{2,8})", text, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    path = urllib.parse.urlparse(str(url or "")).path
+    suffix = path.rsplit(".", 1)[-1] if "." in path else ""
+    return suffix.upper() if suffix else "Unknown"
+
+
+def _libgen_link_priority(link):
+    title = str(link.get("title") or "").lower()
+    href = str(link.get("href") or "").lower()
+    parsed = urllib.parse.urlparse(href)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if path.endswith(".torrent") or "/torrents/" in path:
+        return 10 if "pilimi" in href else 9
+    if path.endswith("ads.php"):
+        return 0
+    if host.endswith(".onion"):
+        return 4
+    for key, rank in LIBGEN_MIRROR_PRIORITY.items():
+        if key == "tor":
+            continue
+        if key in title or key in href:
+            return rank
+    return 99
+
+
+def _libgen_usable_download_links(container, base_url):
+    links = []
+    seen = set()
+    for a in container.find_all("a", href=True):
+        href = a["href"]
+        try:
+            full_url = urllib.parse.urljoin(base_url, href)
+            parsed = urllib.parse.urlparse(full_url)
+        except ValueError:
+            continue
+        if parsed.scheme not in ("http", "https"):
+            continue
+        host = (parsed.hostname or "").lower()
+        path = parsed.path.lower()
+        title = str(a.get("title") or "").lower()
+        if "annas-archive." in host or "anna's archive" in title:
+            continue
+        if host in ("localhost", "127.0.0.1"):
+            continue
+        if path.endswith("/edition.php") or path.endswith("/file.php"):
+            continue
+        if "/covers/" in path:
+            continue
+        if path.endswith("/ads.php"):
+            source = "LibGen GET"
+        elif "torrent" in title or path.endswith(".torrent") or "/torrents/" in path:
+            source = str(a.get("title") or a.get_text(" ", strip=True) or "LibGen torrent").strip()
+        elif "ipfs" in host or "/ipfs/" in path:
+            source = str(a.get("title") or a.get_text(" ", strip=True) or "LibGen IPFS").strip()
+        elif host.endswith(".onion"):
+            source = "LibGen Tor"
+        else:
+            continue
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        links.append((full_url, source, _libgen_link_priority(a)))
+    return sorted(links, key=lambda item: item[2])
+
+
+def _libgen_file_rows_from_edition(soup, detail_url, title, author):
+    files = []
+    table = soup.find("table", id="tablelibgen")
+    if not table:
+        return files
+    for tr in table.find_all("tr"):
+        row_text = re.sub(r"\s+", " ", tr.get_text(" ", strip=True)).strip()
+        if "Size:" not in row_text and "Extension:" not in row_text:
+            continue
+        fmt = _libgen_format_from_text(row_text)
+        size = _libgen_file_size_from_text(row_text)
+        for download_url, source, _priority in _libgen_usable_download_links(tr, detail_url):
+            files.append({
+                "site": urllib.parse.urlparse(download_url).netloc or "libgen",
+                "title": title,
+                "author": author,
+                "format": fmt,
+                "url": detail_url,
+                "file_size": size,
+                "download_source": source,
+                "download_url": download_url,
+                "mirror_rank": _priority,
+                "trust_level": "untrusted",
+            })
+    return files
+
+
+def _libgen_file_rows_from_file_page(soup, detail_url, title, author):
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).strip()
+    fmt = _libgen_format_from_text(text, detail_url)
+    size = _libgen_file_size_from_text(text)
+    files = []
+    for download_url, source, _priority in _libgen_usable_download_links(soup, detail_url):
+        files.append({
+            "site": urllib.parse.urlparse(download_url).netloc or "libgen",
+            "title": title,
+            "author": author,
+            "format": fmt,
+            "url": detail_url,
+            "file_size": size,
+            "download_source": source,
+            "download_url": download_url,
+            "mirror_rank": _priority,
+            "trust_level": "untrusted",
+        })
+    return files
+
+
+def parse_libgen_page(html, detail_url):
+    """Extract title, author, and concrete LibGen file mirrors without LLM use."""
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    title = _libgen_title_from_document(soup)
+    if not title:
+        return None
+    author = _libgen_author_from_document(soup)
+    parsed = urllib.parse.urlparse(detail_url)
+    if parsed.path.endswith("/edition.php"):
+        files = _libgen_file_rows_from_edition(soup, detail_url, title, author)
+    else:
+        files = _libgen_file_rows_from_file_page(soup, detail_url, title, author)
     if not files:
         return None
     return {"title": title, "author": author, "files": files}
@@ -657,8 +852,11 @@ def _extract_detail_links(html, base_url, query, mirror):
     for a in soup.find_all("a", href=True):
         href = a["href"]
         text = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
-        full_url = urllib.parse.urljoin(base_url, href)
-        parsed = urllib.parse.urlparse(full_url)
+        try:
+            full_url = urllib.parse.urljoin(base_url, href)
+            parsed = urllib.parse.urlparse(full_url)
+        except ValueError:
+            continue
         if parsed.scheme not in ("http", "https"):
             continue
         if mirror["group"] == "annas_archive" and "/md5/" not in parsed.path:

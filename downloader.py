@@ -58,11 +58,12 @@ def _safe_segment(value, fallback="unknown"):
 def _extension_from_response(url, content_type, fallback_format):
     parsed = urllib.parse.urlparse(url)
     suffix = Path(urllib.parse.unquote(parsed.path)).suffix
-    if suffix and re.fullmatch(r"\.[A-Za-z0-9]{1,8}", suffix):
+    dynamic_suffixes = {".php", ".asp", ".aspx", ".cgi", ".do"}
+    if suffix and suffix.lower() not in dynamic_suffixes and re.fullmatch(r"\.[A-Za-z0-9]{1,8}", suffix):
         return suffix.lower()
 
     guessed = mimetypes.guess_extension((content_type or "").split(";")[0].strip())
-    if guessed:
+    if guessed and guessed != ".bin":
         return guessed
 
     fmt = str(fallback_format or "").lower()
@@ -107,6 +108,28 @@ def _looks_like_torrent(file_row, url):
     except ValueError:
         path = str(url or "").lower()
     return "torrent" in fmt or "torrent" in source or path.endswith(".torrent")
+
+
+def _is_libgen_ads_url(url):
+    try:
+        parsed = urllib.parse.urlparse(str(url or ""))
+    except ValueError:
+        return False
+    return parsed.path.endswith("/ads.php") and bool(urllib.parse.parse_qs(parsed.query).get("md5"))
+
+
+def _resolve_libgen_ads_url(url):
+    response = requests.get(
+        url,
+        headers=scrapers.get_headers(),
+        timeout=(10, 30),
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    match = re.search(r'''href=["']([^"']*get\.php\?[^"']+)["']''', response.text, re.IGNORECASE)
+    if not match:
+        raise ValueError(f"LibGen ads page did not expose a get.php link: {url}")
+    return urllib.parse.urljoin(response.url, match.group(1))
 
 
 def _is_bulk_torrent_url(url):
@@ -396,6 +419,8 @@ def download_file(
     url = file_row.get("download_url") or file_row.get("url")
     if not url:
         raise ValueError("file row has no download_url or url")
+    if _is_libgen_ads_url(url):
+        url = _resolve_libgen_ads_url(url)
     if _looks_like_torrent(file_row, url):
         if _is_bulk_torrent_url(url):
             raise ValueError(f"refusing bulk archive torrent as single-work download: {url}")

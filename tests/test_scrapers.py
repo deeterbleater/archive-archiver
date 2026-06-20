@@ -117,6 +117,90 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertEqual(rows[0]["title"], "The re-emergence of emergence: science to religion")
         self.assertEqual(rows[0]["url"], "https://libgen.example/edition.php?id=138387302")
 
+    def test_libgen_edition_parser_extracts_ipfs_file_without_llm(self):
+        html = """
+        <html><head>
+          <title>LG+: Fixture fallback title{Fixture Author}(2024, Test Press){42}</title>
+        </head><body>
+          <p><strong>Title:</strong> Fixture Book</p>
+          <p><strong>Author(s):</strong> Ada Author; Max Editor</p>
+          <table id="tablelibgen">
+            <tr>
+              <td>
+                <strong>Size:</strong> <nobr>2 MB (2525972 B)</nobr>
+                <strong>Extension:</strong> pdf
+                <a title="libgen" href="/ads.php?md5=abc"><span>Libgen</span></a>
+                <a title="anna's archive" href="https://annas-archive.gl/md5/abc"><span>Anna</span></a>
+                <a title="IPFS cloudflare" href="https://cloudflare-ipfs.com/ipfs/bafy?filename=fixture.pdf"><span>IPFS</span></a>
+                <a title="IPFS.io" href="https://gateway.ipfs.io/ipfs/bafy?filename=fixture.pdf"><span>IPFS</span></a>
+                <a title="need Tor Browser" href="http://libgenexample.onion/LG/fixture.pdf"><span>TOR</span></a>
+                <a href="/torrents/libgen/r_42.torrent"><span>libgen.is 1000 torrent</span></a>
+              </td>
+              <td><a href="file.php?id=99">+</a></td>
+            </tr>
+          </table>
+        </body></html>
+        """
+
+        parsed = scrapers.parse_libgen_page(html, "https://libgen.example/edition.php?id=42")
+
+        self.assertEqual(parsed["title"], "Fixture Book")
+        self.assertEqual(parsed["author"], "Ada Author; Max Editor")
+        self.assertEqual(len(parsed["files"]), 5)
+        best = scrapers.select_best_file(parsed["files"])
+        self.assertEqual(best["format"], "PDF")
+        self.assertEqual(best["download_source"], "LibGen GET")
+        self.assertEqual(best["download_url"], "https://libgen.example/ads.php?md5=abc")
+
+    def test_libgen_file_parser_extracts_tor_payload_without_llm(self):
+        html = """
+        <html><head>
+          <title>LG+: File Page Title{112680728} libgen.li.mobi</title>
+        </head><body>
+          <div>
+            <h4>Editions:</h4>
+            <a href="edition.php?id=205329269">Ignored edition link</a>
+            <h4>Mirrors:</h4>
+            <a title="libgen" href="/ads.php?md5=c24">Libgen</a>
+            <a title="need Tor Browser" href="http://libgenexample.onion/LG/book.mobi">TOR</a>
+            <a title="magnet" href="magnet:?xt=urn:sha1:abc">Gnutella</a>
+            <a href="/torrents/pilimi-zlib-all/example.torrent">Pilimi torrent</a>
+            <strong>Filesize:</strong> <nobr>418 kB (427570 B)</nobr>
+            <p><strong>Extension:</strong> mobi</p>
+          </div>
+        </body></html>
+        """
+
+        parsed = scrapers.parse_libgen_page(html, "https://libgen.li/file.php?id=112680728")
+
+        self.assertEqual(parsed["title"], "File Page Title")
+        self.assertEqual(parsed["files"][0]["format"], "MOBI")
+        best = scrapers.select_best_file(parsed["files"])
+        self.assertEqual(best["download_source"], "LibGen GET")
+        self.assertEqual(best["download_url"], "https://libgen.li/ads.php?md5=c24")
+
+    def test_libgen_parser_skips_malformed_mirror_hrefs(self):
+        html = """
+        <html><head><title>LG+: Broken Links{Ada}(2024, Test){42}</title></head>
+        <body>
+          <p><strong>Title:</strong> Broken Links</p>
+          <p><strong>Author(s):</strong> Ada</p>
+          <table id="tablelibgen">
+            <tr><td>
+              <strong>Size:</strong> <nobr>1 MB</nobr>
+              <strong>Extension:</strong> epub
+              <a title="bad" href="https://[broken">bad</a>
+              <a title="libgen" href="/ads.php?md5=abc">Libgen</a>
+            </td></tr>
+          </table>
+        </body></html>
+        """
+
+        parsed = scrapers.parse_libgen_page(html, "https://libgen.example/edition.php?id=42")
+
+        self.assertEqual(len(parsed["files"]), 1)
+        self.assertEqual(parsed["files"][0]["download_url"], "https://libgen.example/ads.php?md5=abc")
+
     def test_annas_archive_search_tries_multiple_mirrors(self):
         calls = []
 

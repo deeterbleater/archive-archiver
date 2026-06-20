@@ -481,6 +481,53 @@ class PipelineStateTests(unittest.TestCase):
             {"http": "socks5h://127.0.0.1:9050", "https": "socks5h://127.0.0.1:9050"},
         )
 
+    def test_libgen_ads_url_resolves_get_link_before_download(self):
+        class AdsResponse:
+            status_code = 200
+            url = "https://libgen.example/ads.php?md5=abc"
+            text = '<html><a href="get.php?md5=abc&key=secret"><h2>GET</h2></a></html>'
+
+            def raise_for_status(self):
+                return None
+
+        class PayloadResponse:
+            status_code = 200
+            url = "https://cdn.example/get.php?md5=abc&key=secret"
+            headers = {
+                "Content-Type": "application/octet-stream",
+                "Content-Disposition": 'attachment; filename="fixture.epub"',
+            }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_content(self, chunk_size=1):
+                yield b"epub bytes"
+
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "libgen.example",
+            "format": "EPUB",
+            "download_url": "https://libgen.example/ads.php?md5=abc",
+            "trust_level": "trusted",
+        }
+
+        with mock.patch("downloader.requests.get", side_effect=[AdsResponse(), PayloadResponse()]) as get:
+            with mock.patch("downloader.scanner.scan_file", return_value={"status": "clean", "engine": "fixture", "signature": None}):
+                metadata = downloader.download_file(
+                    row,
+                    bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                    quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                )
+
+        self.assertEqual(metadata["byte_count"], len(b"epub bytes"))
+        self.assertTrue(metadata["storage_key"].endswith(".epub"))
+        self.assertEqual(get.call_args_list[1].args[0], "https://libgen.example/get.php?md5=abc&key=secret")
+
     def test_torrent_download_resolves_payload_file(self):
         row = {
             "id": 1,

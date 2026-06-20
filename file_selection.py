@@ -59,6 +59,7 @@ def file_preference_key(row):
         available_rank,
         _format_rank(row.get("format")),
         _size_rank(row.get("file_size")),
+        int(row.get("mirror_rank") or 0),
         str(row.get("download_url") or row.get("url") or ""),
         str(row.get("id") or ""),
     )
