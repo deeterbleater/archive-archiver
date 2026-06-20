@@ -3,6 +3,7 @@ import contextlib
 import io
 import sys
 import os
+import random
 import time
 import threading
 import traceback
@@ -126,6 +127,39 @@ AUTO_CATEGORY_QUERIES = {
         "public domain drama",
     ],
 }
+
+AUTO_FOCUS_TOPICS = [
+    "golden age science fiction",
+    "weird fiction and cosmic horror",
+    "utopian and dystopian fiction",
+    "detective fiction and mystery",
+    "travel writing and exploration",
+    "natural history and biology",
+    "mathematics and logic",
+    "astronomy and spaceflight",
+    "labor history and union organizing",
+    "urban history and city planning",
+    "folk tales and mythology",
+    "religion and comparative mythology",
+    "early computing and cybernetics",
+    "memoirs and autobiographies",
+    "political theory and statecraft",
+    "feminist history and theory",
+    "public health and medicine",
+    "agriculture and rural life",
+    "maritime history and sea stories",
+    "language learning and linguistics",
+    "poetry and verse drama",
+    "children's literature",
+    "economic history",
+    "military history",
+    "art history and aesthetics",
+    "education and pedagogy",
+    "psychology and psychiatry",
+    "engineering and practical mechanics",
+    "cookery and domestic manuals",
+    "occultism and esotericism",
+]
 
 DEFAULT_PUBLIC_SOURCES = (
     "archive_org",
@@ -739,10 +773,21 @@ def _rotated(items, offset):
     return list(items[offset:]) + list(items[:offset])
 
 
-def build_auto_queries(limit=12, cycle=1, extra_queries=None):
+def random_auto_focus(rng=None):
+    chooser = rng or random
+    return chooser.choice(AUTO_FOCUS_TOPICS)
+
+
+def build_auto_queries(limit=12, cycle=1, extra_queries=None, auto_focus=None):
     """Build a rotating, corpus-aware batch of autonomous collection queries."""
     limit = max(1, int(limit or 1))
     queries = []
+    if auto_focus:
+        queries.extend([
+            f"public domain {auto_focus}",
+            f"{auto_focus} complete works",
+            f"{auto_focus} essays",
+        ])
 
     try:
         categories = db.get_categories(include_counts=True)
@@ -909,6 +954,8 @@ def handle_auto(args):
     cycle = 0
     consecutive_error_cycles = 0
     extra_queries = _load_queries(args) if args.queries_file or args.query else []
+    auto_focus = getattr(args, "auto_focus", None) or random_auto_focus()
+    print(f"[*] Auto collection focus: {auto_focus}")
     while True:
         if _stop_requested(getattr(args, "should_stop", None)):
             print("[!] Auto loop stopped by operator.")
@@ -918,6 +965,7 @@ def handle_auto(args):
             limit=args.query_limit,
             cycle=cycle,
             extra_queries=extra_queries,
+            auto_focus=auto_focus,
         )
         errors = _run_collect_cycle(args, queries, cycle)
         if errors:
@@ -1156,6 +1204,7 @@ def main():
     )
     parser_auto.add_argument("--once", action="store_true", help="Run one autonomous cycle and exit.")
     parser_auto.add_argument("--query-limit", type=int, default=12, help="Maximum auto-selected queries per cycle.")
+    parser_auto.add_argument("--auto-focus", help="Override the random fiction/non-fiction focus for this auto run.")
     parser_auto.add_argument("--sleep-seconds", type=int, default=1800, help="Delay between autonomous cycles.")
     parser_auto.add_argument("--error-sleep-seconds", type=int, default=300, help="Delay after a cycle with errors.")
     parser_auto.add_argument("--max-error-sleep-seconds", type=int, default=3600, help="Maximum delay after repeated error cycles.")

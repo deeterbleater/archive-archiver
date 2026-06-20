@@ -107,16 +107,18 @@ class AgentHarnessTests(unittest.TestCase):
 
         def fake_auto(args):
             captured.update(vars(args))
+            self.assertIn("Current autonomous collection focus: gothic fiction", self.shell._system_prompt())
             args.should_stop()
 
         with mock.patch.object(self.shell.cli, "handle_auto", side_effect=fake_auto):
-            result, _output = self._run("/auto --once --query-limit 4 --sleep-seconds 9 --download-limit 11")
+            result, _output = self._run("/auto --once --query-limit 4 --auto-focus 'gothic fiction' --sleep-seconds 9 --download-limit 11")
             if self.shell._auto_thread:
                 self.shell._auto_thread.join(timeout=2)
 
         self.assertIsNone(result)
         self.assertTrue(captured["once"])
         self.assertEqual(captured["query_limit"], 4)
+        self.assertEqual(captured["auto_focus"], "gothic fiction")
         self.assertEqual(captured["sleep_seconds"], 9)
         self.assertEqual(captured["download_limit"], 11)
         self.assertIn("should_stop", captured)

@@ -135,6 +135,7 @@ class ArchiveAgentShell(cmd.Cmd):
         self._goal_stop_requested = False
         self._auto_thread = None
         self._auto_stop_event = threading.Event()
+        self._auto_focus = None
         self.tools = agent_tools.AppToolRunner(self)
 
     def _run_parser(self, parser, line):
@@ -165,6 +166,16 @@ class ArchiveAgentShell(cmd.Cmd):
             return self.current_goal.get("id")
         return None
 
+    def _system_prompt(self):
+        if not self._auto_focus:
+            return SYSTEM_PROMPT
+        return (
+            f"{SYSTEM_PROMPT}\n\n"
+            "Current autonomous collection focus: "
+            f"{self._auto_focus}. Bias discovery toward this fiction/non-fiction "
+            "topic while still maintaining archival quality and dedupe discipline."
+        )
+
     def _log_agent_status(self, message, loop_kind="chat", phase="update", goal_id=None):
         try:
             return db.add_agent_status(
@@ -186,8 +197,9 @@ class ArchiveAgentShell(cmd.Cmd):
     def _chat_messages(self, user_text, include_memory=True):
         context_length = self.memory.model_context_length(model=self._active_model())
         budget = max(2000, int(context_length * 0.65))
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        used = memory.estimate_tokens(SYSTEM_PROMPT) + memory.estimate_tokens(user_text)
+        system_prompt = self._system_prompt()
+        messages = [{"role": "system", "content": system_prompt}]
+        used = memory.estimate_tokens(system_prompt) + memory.estimate_tokens(user_text)
 
         if include_memory:
             rows = [
@@ -1156,6 +1168,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         parser.add_argument("--sources", nargs="+", choices=self.cli.ALL_SOURCES, default=self.config["sources"])
         parser.add_argument("--once", action="store_true")
         parser.add_argument("--query-limit", type=int, default=12)
+        parser.add_argument("--auto-focus")
         parser.add_argument("--sleep-seconds", type=int, default=1800)
         parser.add_argument("--error-sleep-seconds", type=int, default=300)
         parser.add_argument("--max-error-sleep-seconds", type=int, default=3600)
@@ -1179,11 +1192,13 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
                 self._auto_stop_event.set()
                 print("[+] auto stop requested.")
             else:
+                self._auto_focus = None
                 print("[=] auto is not running.")
             return
         if args.status:
             status = "running" if self._auto_thread and self._auto_thread.is_alive() else "stopped"
-            print(f"auto: {status}")
+            suffix = f" focus={self._auto_focus}" if self._auto_focus else ""
+            print(f"auto: {status}{suffix}")
             return
         if self._auto_thread and self._auto_thread.is_alive():
             print("[!] auto is already running. Use /auto --stop first.")
@@ -1192,6 +1207,8 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         values = vars(args)
         values.pop("stop", None)
         values.pop("status", None)
+        values["auto_focus"] = values.get("auto_focus") or self.cli.random_auto_focus()
+        self._auto_focus = values["auto_focus"]
         self._auto_stop_event.clear()
         auto_args = self._namespace(**values, should_stop=self._auto_stop_event.is_set)
 
@@ -1201,11 +1218,12 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             except Exception as exc:
                 terminal_theme.print_markup(f"[danger]auto loop failed: {type(exc).__name__}: {exc}[/danger]")
             finally:
+                self._auto_focus = None
                 self._auto_stop_event.clear()
 
         self._auto_thread = threading.Thread(target=run_auto, name="alge-auto", daemon=True)
         self._auto_thread.start()
-        print("[+] auto started in the background. Use /auto --status or /auto --stop.")
+        print(f"[+] auto started in the background with focus: {self._auto_focus}. Use /auto --status or /auto --stop.")
 
     def do_corpus(self, line):
         """Build a corpus: corpus NAME [--query TEXT] [--ordering title|hash|created|random]."""

@@ -72,21 +72,27 @@ class CollectResilienceTests(unittest.TestCase):
         ]
 
         with mock.patch("cli.db.get_categories", return_value=categories):
-            queries = cli.build_auto_queries(limit=5, cycle=1, extra_queries=["Asimov public domain"])
+            queries = cli.build_auto_queries(
+                limit=5,
+                cycle=1,
+                extra_queries=["Asimov public domain"],
+                auto_focus="space opera",
+            )
 
+        self.assertEqual(queries[0], "public domain space opera")
         self.assertIn("ethics public domain philosophy", queries)
         self.assertIn("metaphysics public domain", queries)
-        self.assertIn("historical accounts public domain", queries)
 
     def test_auto_runs_one_dynamic_cycle(self):
         args = collect_args(query=None)
         args.query_limit = 3
+        args.auto_focus = "gothic fiction"
 
         with mock.patch("cli.build_auto_queries", return_value=["alpha", "beta"]) as planner:
             with mock.patch("cli._run_collect_cycle", return_value=[]) as run_cycle:
                 cli.handle_auto(args)
 
-        planner.assert_called_once()
+        self.assertEqual(planner.call_args.kwargs["auto_focus"], "gothic fiction")
         run_cycle.assert_called_once_with(args, ["alpha", "beta"], 1)
 
     def test_auto_loop_honors_stop_callback_before_cycle(self):
