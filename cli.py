@@ -5,6 +5,7 @@ import sys
 import os
 import time
 import threading
+import traceback
 import urllib.parse
 from dotenv import load_dotenv
 
@@ -674,26 +675,42 @@ def _load_queries(args):
     return queries
 
 
-def handle_collect(args):
-    queries = _load_queries(args)
-    if not queries:
-        print("[!] No collection queries provided.")
-        sys.exit(1)
+def _collect_phase(name, fn):
+    try:
+        return fn(), None
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        print(f"[!] Collection phase '{name}' failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return None, exc
 
-    cycle = 0
-    while True:
-        cycle += 1
-        print("\n================ COLLECTION CYCLE ===============")
-        print(f"Cycle: {cycle}")
-        print(f"Queries: {len(queries)}")
-        print(f"Sources: {', '.join(args.sources)}")
-        print("=================================================")
 
-        for query in queries:
+def _run_collect_cycle(args, queries, cycle):
+    print("\n================ COLLECTION CYCLE ===============")
+    print(f"Cycle: {cycle}")
+    print(f"Queries: {len(queries)}")
+    print(f"Sources: {', '.join(args.sources)}")
+    print("=================================================")
+
+    errors = []
+    search_results = {"searched": 0, "failed": 0}
+    for query in queries:
+        def search_one(query=query):
             perform_crawl(query, args.model, args.max_results, sources=args.sources)
+            return True
 
-        max_bytes = args.max_mb * 1024 * 1024 if args.max_mb else None
-        download_results = downloader.download_pending_by_domain(
+        _result, exc = _collect_phase(f"search:{query}", search_one)
+        if exc:
+            search_results["failed"] += 1
+            errors.append(exc)
+        else:
+            search_results["searched"] += 1
+
+    max_bytes = args.max_mb * 1024 * 1024 if args.max_mb else None
+    download_results, exc = _collect_phase(
+        "download",
+        lambda: downloader.download_pending_by_domain(
             limit=args.download_limit,
             bucket_dir=args.raw_bucket_dir,
             requests_per_second=args.rps,
@@ -701,21 +718,77 @@ def handle_collect(args):
             max_domains=args.max_domains,
             per_domain_limit=args.per_domain_limit,
             quarantine_dir=args.quarantine_dir,
-        )
-        process_results = processor.process_pending(
+        ),
+    )
+    if exc:
+        errors.append(exc)
+        download_results = {"downloaded": 0, "failed": 0, "skipped": 0, "phase_error": 1}
+
+    process_results, exc = _collect_phase(
+        "process",
+        lambda: processor.process_pending(
             limit=args.process_limit,
             bucket_dir=args.text_bucket_dir,
             extractor=args.extractor,
-        )
+        ),
+    )
+    if exc:
+        errors.append(exc)
+        process_results = {"processed": 0, "failed": 0, "skipped": 0, "phase_error": 1}
 
-        print("\n================ CYCLE SUMMARY ==================")
-        print(f"downloads: {download_results}")
-        print(f"processing: {process_results}")
-        print("=================================================")
+    raw_archive_results = None
+    if args.archive_raw_limit:
+        raw_archive_results, exc = _collect_phase(
+            "archive-raw",
+            lambda: processor.archive_processed_raws(limit=args.archive_raw_limit, delete_local=True),
+        )
+        if exc:
+            errors.append(exc)
+            raw_archive_results = {"archived": 0, "failed": 0, "skipped": 0, "phase_error": 1}
+
+    print("\n================ CYCLE SUMMARY ==================")
+    print(f"search: {search_results}")
+    print(f"downloads: {download_results}")
+    print(f"processing: {process_results}")
+    if raw_archive_results is not None:
+        print(f"raw_archive: {raw_archive_results}")
+    print(f"errors: {len(errors)}")
+    print("=================================================")
+    return errors
+
+
+def _sleep_interruptibly(seconds):
+    deadline = time.time() + max(0, seconds)
+    while time.time() < deadline:
+        time.sleep(min(5, deadline - time.time()))
+
+
+def handle_collect(args):
+    queries = _load_queries(args)
+    if not queries:
+        print("[!] No collection queries provided.")
+        sys.exit(1)
+
+    cycle = 0
+    consecutive_error_cycles = 0
+    while True:
+        cycle += 1
+        errors = _run_collect_cycle(args, queries, cycle)
+        if errors:
+            consecutive_error_cycles += 1
+        else:
+            consecutive_error_cycles = 0
 
         if args.once:
             break
-        time.sleep(args.sleep_seconds)
+        sleep_seconds = args.sleep_seconds
+        if errors:
+            sleep_seconds = min(
+                args.max_error_sleep_seconds,
+                args.error_sleep_seconds * max(1, consecutive_error_cycles),
+            )
+            print(f"[!] Collection cycle had {len(errors)} error(s); backing off for {sleep_seconds}s.")
+        _sleep_interruptibly(sleep_seconds)
 
 def handle_process(args):
     results = processor.process_pending(
@@ -890,8 +963,11 @@ def main():
     )
     parser_collect.add_argument("--once", action="store_true", help="Run one collection cycle and exit.")
     parser_collect.add_argument("--sleep-seconds", type=int, default=3600, help="Delay between collection cycles.")
+    parser_collect.add_argument("--error-sleep-seconds", type=int, default=300, help="Delay after a collection cycle with errors.")
+    parser_collect.add_argument("--max-error-sleep-seconds", type=int, default=3600, help="Maximum delay after repeated error cycles.")
     parser_collect.add_argument("--download-limit", type=int, default=100, help="Maximum files to download per cycle.")
     parser_collect.add_argument("--process-limit", type=int, default=100, help="Maximum downloads to process per cycle.")
+    parser_collect.add_argument("--archive-raw-limit", type=int, default=25, help="Retry this many pending raw S3 archives per cycle. Use 0 to disable.")
     parser_collect.add_argument("--raw-bucket-dir", default=downloader.DEFAULT_RAW_BUCKET_DIR, help="Filesystem-backed raw bucket directory.")
     parser_collect.add_argument("--quarantine-dir", default=downloader.DEFAULT_QUARANTINE_BUCKET_DIR, help="Filesystem-backed quarantine bucket directory.")
     parser_collect.add_argument("--text-bucket-dir", default=processor.DEFAULT_TEXT_BUCKET_DIR, help="Filesystem-backed text bucket directory.")

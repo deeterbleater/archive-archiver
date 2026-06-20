@@ -172,14 +172,18 @@ def _annas_request_client(file_row, url):
         return requests
     session = requests.Session()
     account_url = urllib.parse.urlunparse(parsed._replace(path="/account/", query="", fragment=""))
-    session.post(
-        account_url,
-        data={"key": DEFAULT_ANNAS_MEMBER_KEY},
-        headers=scrapers.get_headers(),
-        timeout=(10, 30),
-        allow_redirects=True,
-    )
-    return session
+    try:
+        session.post(
+            account_url,
+            data={"key": DEFAULT_ANNAS_MEMBER_KEY},
+            headers=scrapers.get_headers(),
+            timeout=(10, 30),
+            allow_redirects=True,
+        )
+        return session
+    except Exception as exc:
+        terminal_theme.print_pip("warning", f"Anna login failed before download; continuing unauthenticated: {exc}")
+        return requests
 
 
 def _reject_annas_stub_response(file_row, request_url, final_url, content_type):
@@ -439,6 +443,7 @@ def download_file(
     url = file_row.get("download_url") or file_row.get("url")
     if not url:
         raise ValueError("file row has no download_url or url")
+    _reject_annas_stub_response(file_row, url, url, "")
     if _is_libgen_ads_url(url):
         url = _resolve_libgen_ads_url(url)
     if _looks_like_torrent(file_row, url):

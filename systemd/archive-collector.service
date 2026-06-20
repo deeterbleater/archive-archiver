@@ -2,14 +2,19 @@
 Description=Archive Archiver autonomous public works collector
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=/root/archive-archiver
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py --max-results 2 collect --sleep-seconds 21600 --download-limit 50 --process-limit 50 --max-domains 4 --per-domain-limit 3 --rps 0.05 --sources archive_org anarchist_library arxiv substack
+EnvironmentFile=-/root/archive-archiver/.env
+ExecStartPre=/usr/bin/mkdir -p /root/archive-archiver/logs
+ExecStart=/root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py --max-results 2 collect --sleep-seconds 21600 --error-sleep-seconds 300 --max-error-sleep-seconds 3600 --download-limit 50 --process-limit 50 --archive-raw-limit 25 --max-domains 4 --per-domain-limit 3 --rps 0.05 --sources archive_org anarchist_library arxiv substack annas_archive libgen archive_plugins
 Restart=always
-RestartSec=60
+RestartSec=30
+TimeoutStartSec=120
+TimeoutStopSec=60
 StandardOutput=append:/root/archive-archiver/logs/collector.log
 StandardError=append:/root/archive-archiver/logs/collector.log
 
