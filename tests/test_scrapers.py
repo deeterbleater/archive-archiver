@@ -97,6 +97,25 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertTrue(captured["mirrors"])
         self.assertTrue(all(mirror["group"] == "libgen_plus" for mirror in captured["mirrors"]))
 
+    def test_libgen_plus_search_uses_index_php_req_route(self):
+        fetched = []
+        mirror = {"name": "Libgen+ BZ", "group": "libgen_plus", "url": "https://libgen.bz/"}
+
+        def fake_fetch(url, **_kwargs):
+            fetched.append(url)
+            return ""
+
+        original_fetch = scrapers.fetch_url
+        try:
+            scrapers.fetch_url = fake_fetch
+            rows = scrapers.search_libgen("asimov", mirrors=[mirror])
+        finally:
+            scrapers.fetch_url = original_fetch
+
+        self.assertEqual(rows, [])
+        self.assertEqual(fetched, ["https://libgen.bz/index.php?req=asimov"])
+        self.assertFalse(any("/search.php" in url for url in fetched))
+
     def test_slum_search_dedupes_libgen_mirror_edition_ids(self):
         html = """
         <html><body>

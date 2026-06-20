@@ -1047,10 +1047,7 @@ def _candidate_search_urls(mirror, query):
     if mirror["group"] == "annas_archive":
         return [f"{base}/search?q={encoded}"]
     if mirror["group"] == "libgen_plus":
-        return [
-            f"{base}/index.php?req={encoded}",
-            f"{base}/search.php?req={encoded}",
-        ]
+        return [f"{base}/index.php?req={encoded}"]
     if mirror["group"] == "zlibrary":
         return [
             f"{base}/s/{encoded}",
