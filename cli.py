@@ -146,6 +146,28 @@ def _stop_requested(should_stop):
     return bool(should_stop and should_stop())
 
 
+def _parse_page_with_deterministic_fallback(html, url, model, source_name=None, trust_level="untrusted"):
+    parsed_data = scrapers.parse_known_archive_page(
+        html,
+        url,
+        source_name=source_name,
+        trust_level=trust_level,
+    )
+    if parsed_data:
+        print("      [+] Parsed download links deterministically.")
+        return parsed_data
+
+    cleaned = scrapers.clean_html(html)
+    print("      [*] Analyzing page with OpenRouter LLM...")
+    try:
+        parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
+    except ValueError as ve:
+        print(f"      [!] LLM skipped: {ve}")
+        return None
+    print("      [+] OpenRouter analysis returned.")
+    return parsed_data
+
+
 def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=None):
     sources = set(sources)
     print(f"[*] Searching archives for: '{query}'...")
@@ -253,15 +275,13 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 print("      [!] Failed to fetch content.")
                 continue
 
-            cleaned = scrapers.clean_html(html)
-            print("      [*] Analyzing page with OpenRouter LLM...")
-            try:
-                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-            except ValueError as ve:
-                print(f"      [!] LLM skipped: {ve}")
-                parsed_data = None
-            else:
-                print("      [+] OpenRouter analysis returned.")
+            parsed_data = _parse_page_with_deterministic_fallback(
+                html,
+                url,
+                model,
+                source_name="The Anarchist Library",
+                trust_level="trusted",
+            )
             
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -299,19 +319,13 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 print("      [!] Failed to fetch content.")
                 continue
 
-            parsed_data = scrapers.parse_annas_detail_page(html, url)
-            if parsed_data:
-                print("      [+] Parsed Anna's Archive download links deterministically.")
-            else:
-                cleaned = scrapers.clean_html(html)
-                print("      [*] Analyzing page with OpenRouter LLM...")
-                try:
-                    parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-                except ValueError as ve:
-                    print(f"      [!] LLM skipped: {ve}")
-                    parsed_data = None
-                else:
-                    print("      [+] OpenRouter analysis returned.")
+            parsed_data = _parse_page_with_deterministic_fallback(
+                html,
+                url,
+                model,
+                source_name="Anna's Archive Mirror",
+                trust_level="untrusted",
+            )
             
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -350,19 +364,13 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 print("      [!] Failed to fetch content.")
                 continue
 
-            parsed_data = scrapers.parse_libgen_page(html, url)
-            if parsed_data:
-                print("      [+] Parsed LibGen file mirrors deterministically.")
-            else:
-                cleaned = scrapers.clean_html(html)
-                print("      [*] Analyzing page with OpenRouter LLM...")
-                try:
-                    parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-                except ValueError as ve:
-                    print(f"      [!] LLM skipped: {ve}")
-                    parsed_data = None
-                else:
-                    print("      [+] OpenRouter analysis returned.")
+            parsed_data = _parse_page_with_deterministic_fallback(
+                html,
+                url,
+                model,
+                source_name="LibGen mirror",
+                trust_level="untrusted",
+            )
 
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -403,15 +411,13 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 print("      [!] Failed to fetch content.")
                 continue
 
-            cleaned = scrapers.clean_html(html)
-            print("      [*] Analyzing page with OpenRouter LLM...")
-            try:
-                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-            except ValueError as ve:
-                print(f"      [!] LLM skipped: {ve}")
-                parsed_data = None
-            else:
-                print("      [+] OpenRouter analysis returned.")
+            parsed_data = _parse_page_with_deterministic_fallback(
+                html,
+                url,
+                model,
+                source_name=res.get("source_name", "Open SLUM mirror"),
+                trust_level="untrusted",
+            )
 
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -452,15 +458,13 @@ def perform_crawl(query, model, max_results=3, sources=ALL_SOURCES, should_stop=
                 print("      [!] Failed to fetch content.")
                 continue
 
-            cleaned = scrapers.clean_html(html)
-            print("      [*] Analyzing page with OpenRouter LLM...")
-            try:
-                parsed_data = llm.parse_page_with_llm(cleaned, url, model=model)
-            except ValueError as ve:
-                print(f"      [!] LLM skipped: {ve}")
-                parsed_data = None
-            else:
-                print("      [+] OpenRouter analysis returned.")
+            parsed_data = _parse_page_with_deterministic_fallback(
+                html,
+                url,
+                model,
+                source_name=res.get("source_name", "Archive plugin"),
+                trust_level=res.get("trust_level", "untrusted"),
+            )
 
             if parsed_data and parsed_data.get("title"):
                 title = parsed_data["title"]
@@ -551,15 +555,12 @@ def handle_url(args):
         print("[!] Failed to fetch page content.")
         sys.exit(1)
         
-    cleaned = scrapers.clean_html(html)
-    print("[*] Analyzing content with OpenRouter LLM...")
-    try:
-        parsed_data = llm.parse_page_with_llm(cleaned, args.url, model=args.model)
-    except ValueError as ve:
-        print(f"[!] LLM failed: {ve}")
-        sys.exit(1)
-    else:
-        print("[+] OpenRouter analysis returned.")
+    parsed_data = _parse_page_with_deterministic_fallback(
+        html,
+        args.url,
+        args.model,
+        source_name="Direct URL Mirror",
+    )
     
     if not parsed_data or not parsed_data.get("title"):
         print("[!] Failed to parse or extract structured data from page.")

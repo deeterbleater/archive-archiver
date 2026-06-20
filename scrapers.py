@@ -48,6 +48,21 @@ LIBGEN_MIRROR_PRIORITY = {
     "libgen.is 1000 torrent": 9,
     "pilimi torrent": 10,
 }
+EXTRACTABLE_LINK_FORMATS = {
+    ".txt": "Text",
+    ".text": "Text",
+    ".muse": "Muse",
+    ".md": "Text",
+    ".html": "HTML",
+    ".htm": "HTML",
+    ".xml": "HTML",
+    ".pdf": "PDF",
+    ".epub": "EPUB",
+    ".mobi": "MOBI",
+    ".azw3": "AZW3",
+    ".djvu": "DJVU",
+    ".gz": "Text",
+}
 
 def get_headers():
     return {
@@ -225,6 +240,89 @@ def filter_annas_download_files(files):
                 item = {**item, "download_url": clean_url}
         filtered.append(item)
     return filtered
+
+
+def _meta_content(soup, *names):
+    wanted = {name.lower() for name in names}
+    for meta in soup.find_all("meta"):
+        key = (meta.get("property") or meta.get("name") or "").lower()
+        if key in wanted and meta.get("content"):
+            return re.sub(r"\s+", " ", meta["content"]).strip()
+    return None
+
+
+def _document_title(soup, fallback=None):
+    title = _meta_content(soup, "og:title", "twitter:title")
+    if not title:
+        h1 = soup.find("h1")
+        if h1:
+            title = h1.get_text(" ", strip=True)
+    if not title and soup.title and soup.title.string:
+        title = soup.title.string
+    title = re.sub(r"\s+", " ", title or "").strip()
+    title = re.sub(r"\s+[|—-]\s+The Anarchist Library$", "", title, flags=re.IGNORECASE)
+    return title or fallback or "Untitled work"
+
+
+def _document_author(soup):
+    author = _meta_content(soup, "author", "article:author", "book:author")
+    if author:
+        return author
+    for selector in (".author", ".authors", "[rel=author]", "h2"):
+        node = soup.select_one(selector)
+        if node:
+            text = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+            if text:
+                return text[:240]
+    return None
+
+
+def _format_from_url(url):
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return None
+    path = parsed.path.lower()
+    for suffix, fmt in sorted(EXTRACTABLE_LINK_FORMATS.items(), key=lambda item: -len(item[0])):
+        if path.endswith(suffix):
+            return fmt
+    return None
+
+
+def _extractable_link_rows(soup, detail_url, title, author, source_name, trust_level="untrusted", include_html=False):
+    files = []
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        try:
+            full_url = urllib.parse.urljoin(detail_url, href)
+            parsed = urllib.parse.urlparse(full_url)
+        except ValueError:
+            continue
+        if parsed.scheme not in ("http", "https"):
+            continue
+        fmt = _format_from_url(full_url)
+        if not fmt:
+            continue
+        if fmt == "HTML" and not include_html:
+            continue
+        clean_url = urllib.parse.urlunparse(parsed._replace(fragment=""))
+        if clean_url in seen:
+            continue
+        seen.add(clean_url)
+        label = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
+        files.append({
+            "site": parsed.netloc,
+            "title": title,
+            "author": author,
+            "format": fmt,
+            "url": detail_url,
+            "file_size": "Unknown",
+            "download_source": label or source_name,
+            "download_url": clean_url,
+            "trust_level": trust_level,
+        })
+    return files
 
 
 def _annas_detail_title(soup):
@@ -485,6 +583,123 @@ def parse_libgen_page(html, detail_url):
     if not files:
         return None
     return {"title": title, "author": author, "files": files}
+
+
+def _anarchist_library_export_url(detail_url, suffix):
+    parsed = urllib.parse.urlparse(detail_url)
+    path = parsed.path.rstrip("/")
+    if not path.startswith("/library/"):
+        return None
+    if "." in path.rsplit("/", 1)[-1]:
+        path = path.rsplit(".", 1)[0]
+    return urllib.parse.urlunparse(parsed._replace(path=f"{path}{suffix}", query="", fragment=""))
+
+
+def parse_anarchist_library_page(html, detail_url):
+    """Extract The Anarchist Library work exports without LLM use."""
+    if not html:
+        return None
+    try:
+        parsed_url = urllib.parse.urlparse(detail_url)
+    except ValueError:
+        return None
+    if "theanarchistlibrary.org" not in parsed_url.netloc.lower():
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    title = _document_title(soup, fallback="Anarchist Library work")
+    author = _document_author(soup)
+    files = _extractable_link_rows(
+        soup,
+        detail_url,
+        title,
+        author,
+        "The Anarchist Library export",
+        trust_level="trusted",
+        include_html=True,
+    )
+
+    current_format = _format_from_url(detail_url)
+    if current_format:
+        files.append({
+            "site": parsed_url.netloc,
+            "title": title,
+            "author": author,
+            "format": current_format,
+            "url": detail_url,
+            "file_size": "Unknown",
+            "download_source": "The Anarchist Library direct file",
+            "download_url": detail_url,
+            "trust_level": "trusted",
+        })
+    else:
+        files.append({
+            "site": parsed_url.netloc,
+            "title": title,
+            "author": author,
+            "format": "HTML",
+            "url": detail_url,
+            "file_size": "Unknown",
+            "download_source": "The Anarchist Library HTML",
+            "download_url": detail_url,
+            "trust_level": "trusted",
+        })
+
+    seen = {row["download_url"] for row in files}
+    for suffix, fmt in ((".muse", "Muse"), (".epub", "EPUB"), (".pdf", "PDF")):
+        export_url = _anarchist_library_export_url(detail_url, suffix)
+        if not export_url or export_url in seen:
+            continue
+        seen.add(export_url)
+        files.append({
+            "site": parsed_url.netloc,
+            "title": title,
+            "author": author,
+            "format": fmt,
+            "url": detail_url,
+            "file_size": "Unknown",
+            "download_source": f"The Anarchist Library {fmt}",
+            "download_url": export_url,
+            "trust_level": "trusted",
+        })
+
+    return {"title": title, "author": author, "files": files}
+
+
+def parse_generic_download_page(html, detail_url, source_name="Download link", trust_level="untrusted"):
+    """Extract obvious direct ebook/text links from a page without inferring page semantics."""
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    title = _document_title(soup, fallback=detail_url)
+    author = _document_author(soup)
+    files = _extractable_link_rows(soup, detail_url, title, author, source_name, trust_level=trust_level)
+    if not files:
+        return None
+    return {"title": title, "author": author, "files": files}
+
+
+def parse_known_archive_page(html, detail_url, source_name=None, trust_level="untrusted"):
+    """Route known archive detail pages through deterministic parsers before LLM fallback."""
+    try:
+        parsed = urllib.parse.urlparse(detail_url)
+    except ValueError:
+        return None
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+
+    if is_annas_archive_url(detail_url):
+        return parse_annas_detail_page(html, detail_url)
+    if "libgen." in host or path.endswith("/edition.php") or path.endswith("/file.php"):
+        return parse_libgen_page(html, detail_url)
+    if host.endswith("theanarchistlibrary.org"):
+        return parse_anarchist_library_page(html, detail_url)
+    return parse_generic_download_page(
+        html,
+        detail_url,
+        source_name=source_name or "Direct download link",
+        trust_level=trust_level,
+    )
 
 
 def search_arxiv(query, max_results=10):

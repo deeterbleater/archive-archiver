@@ -201,6 +201,73 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertEqual(len(parsed["files"]), 1)
         self.assertEqual(parsed["files"][0]["download_url"], "https://libgen.example/ads.php?md5=abc")
 
+    def test_anarchist_library_parser_extracts_exports_without_llm(self):
+        html = """
+        <html>
+          <head>
+            <title>The Conquest of Bread | The Anarchist Library</title>
+            <meta name="author" content="Peter Kropotkin">
+          </head>
+          <body>
+            <h1>The Conquest of Bread</h1>
+            <a href="/library/petr-kropotkin-the-conquest-of-bread.muse">Muse</a>
+            <a href="/library/petr-kropotkin-the-conquest-of-bread.epub">EPUB</a>
+            <a href="/library/petr-kropotkin-the-conquest-of-bread.pdf">PDF</a>
+          </body>
+        </html>
+        """
+
+        parsed = scrapers.parse_anarchist_library_page(
+            html,
+            "https://theanarchistlibrary.org/library/petr-kropotkin-the-conquest-of-bread",
+        )
+
+        self.assertEqual(parsed["title"], "The Conquest of Bread")
+        self.assertEqual(parsed["author"], "Peter Kropotkin")
+        best = scrapers.select_best_file(parsed["files"])
+        self.assertEqual(best["format"], "Muse")
+        self.assertEqual(
+            best["download_url"],
+            "https://theanarchistlibrary.org/library/petr-kropotkin-the-conquest-of-bread.muse",
+        )
+
+    def test_known_archive_router_extracts_generic_download_links(self):
+        html = """
+        <html>
+          <head><meta property="og:title" content="Mirror Fixture"></head>
+          <body>
+            <a href="/readme">Read more</a>
+            <a href="/downloads/mirror-fixture.epub">Download EPUB</a>
+          </body>
+        </html>
+        """
+
+        parsed = scrapers.parse_known_archive_page(
+            html,
+            "https://mirror.example/detail/fixture",
+            source_name="Mirror Fixture",
+        )
+
+        self.assertEqual(parsed["title"], "Mirror Fixture")
+        self.assertEqual(len(parsed["files"]), 1)
+        self.assertEqual(parsed["files"][0]["format"], "EPUB")
+        self.assertEqual(parsed["files"][0]["download_url"], "https://mirror.example/downloads/mirror-fixture.epub")
+
+    def test_generic_router_does_not_treat_html_navigation_as_work_file(self):
+        html = """
+        <html>
+          <head><title>Navigation Fixture</title></head>
+          <body>
+            <a href="/about.html">About</a>
+            <a href="/contact.html">Contact</a>
+          </body>
+        </html>
+        """
+
+        parsed = scrapers.parse_known_archive_page(html, "https://mirror.example/detail/fixture")
+
+        self.assertIsNone(parsed)
+
     def test_annas_archive_search_tries_multiple_mirrors(self):
         calls = []
 

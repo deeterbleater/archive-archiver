@@ -6,6 +6,7 @@ FORMAT_PREFERENCE = {
     "text": 0,
     "plain text": 0,
     "txt": 0,
+    "muse": 0,
     "html": 1,
     "htm": 1,
     "epub": 2,

@@ -89,6 +89,15 @@ class PipelineStateTests(unittest.TestCase):
         self.assertIn("readable compressed text", text)
         self.assertNotIn("\x8b", text)
 
+    def test_muse_extracts_as_plaintext(self):
+        path = Path(self.tempdir.name) / "fixture.muse"
+        path.write_text("#title Fixture\n\nReadable muse text.", encoding="utf-8")
+
+        text, mode = processor.extract_plaintext(path, format_hint="Muse")
+
+        self.assertEqual(mode, "text")
+        self.assertIn("Readable muse text", text)
+
     def test_local_validator_rejects_binary_garbage(self):
         result = text_validator.heuristic_quality("\x8b\b\b\x00\x00\x00garbage")
 
