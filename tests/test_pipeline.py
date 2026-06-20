@@ -412,6 +412,58 @@ class PipelineStateTests(unittest.TestCase):
                     quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
                 )
 
+    def test_annas_download_uses_login_session_when_member_key_configured(self):
+        class FakeResponse:
+            status_code = 200
+            url = "https://download.example/book.epub"
+            headers = {"Content-Type": "application/epub+zip"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_content(self, chunk_size=1):
+                yield b"epub bytes"
+
+        class FakeSession:
+            def __init__(self):
+                self.posts = []
+                self.gets = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return mock.Mock(status_code=200, url=url)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return FakeResponse()
+
+        session = FakeSession()
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "annas-archive.org",
+            "format": "EPUB",
+            "download_url": "https://annas-archive.gl/fast_download/abc123abc123abc123abc123abc123ab/0/0",
+            "trust_level": "trusted",
+        }
+
+        with mock.patch.object(downloader, "DEFAULT_ANNAS_MEMBER_KEY", "fixture-key"):
+            with mock.patch("downloader.requests.Session", return_value=session):
+                with mock.patch("downloader.scanner.scan_file", return_value={"status": "clean", "engine": "fixture", "signature": None}):
+                    metadata = downloader.download_file(
+                        row,
+                        bucket_dir=str(Path(self.tempdir.name) / "raw"),
+                        quarantine_dir=str(Path(self.tempdir.name) / "quarantine"),
+                    )
+
+        self.assertEqual(session.posts[0][0], "https://annas-archive.gl/account/")
+        self.assertEqual(session.posts[0][1]["data"], {"key": "fixture-key"})
+        self.assertEqual(session.gets[0][0], row["download_url"])
+        self.assertEqual(metadata["content_type"], "application/epub+zip")
+
     def test_http_download_preserves_response_extension_after_quarantine(self):
         class FakeResponse:
             status_code = 200

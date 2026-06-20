@@ -384,6 +384,7 @@ def parse_annas_detail_page(html, detail_url):
             continue
         seen.add(full_url)
         label = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip() or "Anna's Archive download"
+        mirror_rank = 0 if "/slow_download/" in parsed.path else 1
         files.append({
             "site": "annas-archive.org",
             "title": title,
@@ -393,6 +394,7 @@ def parse_annas_detail_page(html, detail_url):
             "file_size": file_size,
             "download_source": f"Anna's Archive {label}",
             "download_url": full_url,
+            "mirror_rank": mirror_rank,
             "trust_level": "untrusted",
         })
     if not files:

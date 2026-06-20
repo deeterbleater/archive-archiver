@@ -466,6 +466,13 @@ Tor/.onion downloads:
 - If `ALGE_TOR_PROXY` is unset, `.onion` download candidates fail fast with a
   clear error and fall out of the pending queue like other failed downloads.
 
+Anna's Archive member downloads:
+
+- Set `ALGE_ANNAS_MEMBER_KEY` in `.env`. The downloader logs in to
+  `/account/` with the key before requesting `/fast_download/` or
+  `/slow_download/` URLs.
+- Keep this value out of commits and logs.
+
 Torrent fallback:
 
 - Torrent rows are resolved into an actual payload before extraction. ALGE does

@@ -345,6 +345,8 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertIn("/fast_download/", payload["files"][0]["download_url"])
         self.assertNotIn("/md5/", payload["files"][0]["download_url"])
         self.assertEqual(payload["files"][0]["trust_level"], "untrusted")
+        best = scrapers.select_best_file(payload["files"])
+        self.assertIn("/slow_download/", best["download_url"])
 
     def test_annas_file_filter_drops_page_links(self):
         rows = [

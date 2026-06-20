@@ -23,6 +23,7 @@ import terminal_theme
 DEFAULT_RAW_BUCKET_DIR = os.getenv("ARCHIVE_RAW_BUCKET_DIR", "bucket/raw")
 DEFAULT_QUARANTINE_BUCKET_DIR = os.getenv("ARCHIVE_QUARANTINE_BUCKET_DIR", "bucket/quarantine")
 DEFAULT_TOR_PROXY = os.getenv("ALGE_TOR_PROXY") or os.getenv("ARCHIVE_TOR_PROXY")
+DEFAULT_ANNAS_MEMBER_KEY = os.getenv("ALGE_ANNAS_MEMBER_KEY") or os.getenv("ANNAS_ARCHIVE_MEMBER_KEY")
 DEFAULT_TORRENT_CLIENT = os.getenv("ALGE_TORRENT_CLIENT") or os.getenv("ARCHIVE_TORRENT_CLIENT")
 DEFAULT_TORRENT_TIMEOUT_SECONDS = int(os.getenv("ALGE_TORRENT_TIMEOUT", "300"))
 DEFAULT_TORRENT_STALL_SECONDS = int(os.getenv("ALGE_TORRENT_STALL_TIMEOUT", "60"))
@@ -161,6 +162,24 @@ def _is_annas_archive_file(file_row, url):
     site = str(file_row.get("site") or "").lower()
     parsed = urllib.parse.urlparse(str(url or ""))
     return "annas-archive" in site or "annas-archive." in parsed.netloc
+
+
+def _annas_request_client(file_row, url):
+    if not DEFAULT_ANNAS_MEMBER_KEY or not _is_annas_archive_file(file_row, url):
+        return requests
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if not parsed.netloc:
+        return requests
+    session = requests.Session()
+    account_url = urllib.parse.urlunparse(parsed._replace(path="/account/", query="", fragment=""))
+    session.post(
+        account_url,
+        data={"key": DEFAULT_ANNAS_MEMBER_KEY},
+        headers=scrapers.get_headers(),
+        timeout=(10, 30),
+        allow_redirects=True,
+    )
+    return session
 
 
 def _reject_annas_stub_response(file_row, request_url, final_url, content_type):
@@ -442,9 +461,10 @@ def download_file(
     temp_dir = quarantine_root / ".tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_path = temp_dir / f"file-{file_row['id']}-{time.time_ns()}.part"
+    request_client = _annas_request_client(file_row, url)
 
     try:
-        with requests.get(
+        with request_client.get(
             url,
             headers=scrapers.get_headers(),
             timeout=(10, 90),
