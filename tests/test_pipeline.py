@@ -110,6 +110,29 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(mode, "html")
         self.assertIn("Readable FB2 text", text)
 
+    def test_pdf_keeps_native_text_when_extraction_is_useful(self):
+        path = Path(self.tempdir.name) / "fixture.pdf"
+        path.write_bytes(b"%PDF fixture")
+
+        with mock.patch("processor._extract_pdf_text", return_value="Native PDF text " * 20):
+            with mock.patch("processor.ocr.extract_pdf") as ocr_extract:
+                text, mode = processor.extract_plaintext(path, format_hint="PDF")
+
+        self.assertEqual(mode, "pdf")
+        self.assertIn("Native PDF text", text)
+        ocr_extract.assert_not_called()
+
+    def test_pdf_falls_back_to_ocr_when_native_text_is_sparse(self):
+        path = Path(self.tempdir.name) / "scanned.pdf"
+        path.write_bytes(b"%PDF fixture")
+
+        with mock.patch("processor._extract_pdf_text", return_value=""):
+            with mock.patch("processor.ocr.extract_pdf", return_value="OCR PDF text " * 20):
+                text, mode = processor.extract_plaintext(path, format_hint="PDF")
+
+        self.assertEqual(mode, "pdf+ocr")
+        self.assertIn("OCR PDF text", text)
+
     def test_local_validator_rejects_binary_garbage(self):
         result = text_validator.heuristic_quality("\x8b\b\b\x00\x00\x00garbage")
 

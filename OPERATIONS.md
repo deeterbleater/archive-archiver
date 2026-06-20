@@ -501,6 +501,18 @@ Tor/.onion downloads:
 - If `ALGE_TOR_PROXY` is unset, `.onion` download candidates fail fast with a
   clear error and fall out of the pending queue like other failed downloads.
 
+OCR fallback:
+
+- PDF extraction uses embedded text first. If that produces too little text,
+  ALGE tries OCR and marks the extraction mode as `pdf+ocr`.
+- OCR is optional and controlled by `ALGE_OCR_ENABLED`, defaulting on when tools
+  are installed.
+- Preferred tooling is `ocrmypdf`; fallback tooling is `tesseract` plus
+  `poppler-utils` for `pdftoppm`.
+- `ALGE_OCR_MAX_PAGES` limits scanned PDF OCR cost and defaults to `50`.
+- Common image formats (`png`, `jpg`, `tif`, `bmp`) can be extracted through
+  Tesseract as `image+ocr`.
+
 Anna's Archive member downloads:
 
 - Set `ALGE_ANNAS_MEMBER_KEY` in `.env`. The downloader logs in to

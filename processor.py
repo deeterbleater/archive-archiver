@@ -8,6 +8,7 @@ import urllib.parse
 from bs4 import BeautifulSoup
 
 import db
+import ocr
 import s3_storage
 import terminal_theme
 import text_validator
@@ -71,7 +72,13 @@ def _extract_html(raw):
         node.decompose()
     return _normalize_text(soup.get_text(separator="\n", strip=True))
 
-def _extract_pdf(path):
+def _has_useful_text(text, min_chars=200):
+    if not text:
+        return False
+    alnum = re.findall(r"[A-Za-z0-9]", text)
+    return len(alnum) >= min_chars
+
+def _extract_pdf_text(path):
     try:
         from pypdf import PdfReader
     except ImportError as exc:
@@ -85,6 +92,20 @@ def _extract_pdf(path):
         except Exception as exc:
             pages.append(f"\n[page {page_number} extraction failed: {exc}]\n")
     return _normalize_text("\n\n".join(pages))
+
+def _extract_pdf(path):
+    text = _extract_pdf_text(path)
+    if _has_useful_text(text):
+        return text, "pdf"
+    try:
+        ocr_text = ocr.extract_pdf(path)
+    except ocr.OCRUnavailable:
+        return text, "pdf"
+    except ocr.OCRError:
+        return text, "pdf"
+    if ocr_text:
+        return ocr_text, "pdf+ocr"
+    return text, "pdf"
 
 def _extract_epub(path):
     try:
@@ -126,10 +147,18 @@ def extract_plaintext(path, content_type=None, format_hint=None):
         return _normalize_text(_decode_bytes(raw)), "text"
 
     if suffix == ".pdf" or "pdf" in hint:
-        return _extract_pdf(path), "pdf"
+        return _extract_pdf(path)
 
     if suffix == ".epub" or "epub" in hint:
         return _extract_epub(path), "epub"
+
+    if suffix in (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp") or "image/" in hint:
+        try:
+            return ocr.extract_image(path), "image+ocr"
+        except ocr.OCRUnavailable as exc:
+            raise UnsupportedFormat(str(exc)) from exc
+        except ocr.OCRError as exc:
+            raise UnsupportedFormat(str(exc)) from exc
 
     raise UnsupportedFormat(f"unsupported plaintext extractor format: {suffix or format_hint or content_type}")
 
