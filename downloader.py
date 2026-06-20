@@ -170,6 +170,8 @@ def _annas_request_client(file_row, url):
     parsed = urllib.parse.urlparse(str(url or ""))
     if not parsed.netloc:
         return requests
+    if "/slow_download/" in (parsed.path or ""):
+        return requests
     session = requests.Session()
     account_url = urllib.parse.urlunparse(parsed._replace(path="/account/", query="", fragment=""))
     try:

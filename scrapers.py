@@ -240,7 +240,32 @@ def filter_annas_download_files(files):
                 clean_url = urllib.parse.urlunparse(parsed._replace(query="", fragment=""))
                 item = {**item, "download_url": clean_url}
         filtered.append(item)
+    slow = [
+        item for item in filtered
+        if "/slow_download/" in str(item.get("download_url") or item.get("url") or "")
+        and "waitlist" not in str(item.get("download_source") or "").lower()
+    ]
+    if slow:
+        external = [
+            item for item in filtered
+            if not is_annas_archive_url(str(item.get("download_url") or item.get("url") or ""))
+        ]
+        return slow + external
     return filtered
+
+
+def _annas_partner_rank(label, path):
+    label = str(label or "").lower()
+    if "waitlist" in label:
+        return 100
+    if "/slow_download/" not in path:
+        return 50
+    server_match = re.search(r"partner server\s*#?\s*(\d+)", label, re.IGNORECASE)
+    if server_match and server_match.group(1) == "5":
+        return 0
+    if server_match:
+        return 10 + abs(int(server_match.group(1)) - 5)
+    return 20
 
 
 def _meta_content(soup, *names):
@@ -384,7 +409,7 @@ def parse_annas_detail_page(html, detail_url):
             continue
         seen.add(full_url)
         label = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip() or "Anna's Archive download"
-        mirror_rank = 0 if "/slow_download/" in parsed.path else 1
+        mirror_rank = _annas_partner_rank(label, parsed.path or "")
         files.append({
             "site": "annas-archive.org",
             "title": title,
@@ -399,6 +424,10 @@ def parse_annas_detail_page(html, detail_url):
         })
     if not files:
         return None
+    files = filter_annas_download_files(files)
+    if not files:
+        return None
+    files.sort(key=lambda row: int(row.get("mirror_rank") or 0))
     return {"title": title, "author": author, "files": files}
 
 
@@ -872,6 +901,10 @@ def search_substack(query):
     If the query contains a Substack publication URL, the publication RSS feed
     is used because it is stable and does not depend on Substack's JS app.
     """
+    direct_url = _substack_direct_item_url(query)
+    if direct_url:
+        return [substack_row_from_url(direct_url)]
+
     publication_url = _substack_publication_url(query)
     if publication_url:
         return search_substack_publication(publication_url)
@@ -898,6 +931,24 @@ def search_substack(query):
     return parse_substack_search(html, search_url, query=query)
 
 
+def _substack_direct_item_url(query):
+    query = str(query or "").strip()
+    match = re.search(r"https?://[A-Za-z0-9.-]*substack\.com/[^\s]+", query)
+    if not match:
+        return None
+    parsed = urllib.parse.urlparse(match.group(0))
+    host = parsed.netloc.lower()
+    path = parsed.path
+    is_item = (
+        host.endswith(".substack.com") and ("/p/" in path or "/note/" in path)
+    ) or (
+        host == "substack.com" and re.search(r"/@[^/]+/(?:p|note)/", path)
+    )
+    if not is_item:
+        return None
+    return urllib.parse.urlunparse(parsed._replace(fragment=""))
+
+
 def _substack_publication_url(query):
     query = str(query or "").strip()
     if query.startswith("substack:"):
@@ -909,6 +960,21 @@ def _substack_publication_url(query):
     if not parsed.netloc.lower().endswith("substack.com"):
         return None
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def substack_row_from_url(url, title=None, author=None):
+    parsed = urllib.parse.urlparse(url)
+    title = title or url.rstrip("/").rsplit("/", 1)[-1].replace("-", " ") or url
+    return {
+        "title": title,
+        "author": author,
+        "site": parsed.netloc.lower(),
+        "format": "HTML",
+        "url": url,
+        "file_size": "Unknown",
+        "download_source": "Substack HTML",
+        "download_url": url,
+    }
 
 
 def parse_substack_json(payload, query=None):
@@ -938,16 +1004,11 @@ def parse_substack_json(payload, query=None):
         if parsed.scheme not in ("http", "https") or "substack.com" not in parsed.netloc:
             continue
         seen.add(url)
-        rows.append({
-            "title": post.get("title") or post.get("subtitle") or url,
-            "author": ((post.get("publishedBylines") or [{}])[0].get("name") if isinstance(post.get("publishedBylines"), list) else None),
-            "site": parsed.netloc,
-            "format": "HTML",
-            "url": url,
-            "file_size": "Unknown",
-            "download_source": "Substack HTML",
-            "download_url": url,
-        })
+        rows.append(substack_row_from_url(
+            url,
+            title=post.get("title") or post.get("subtitle") or url,
+            author=((post.get("publishedBylines") or [{}])[0].get("name") if isinstance(post.get("publishedBylines"), list) else None),
+        ))
     return rows
 
 
@@ -980,16 +1041,10 @@ def parse_substack_feed(xml_text, publication_url):
         author = (item.findtext("{http://purl.org/dc/elements/1.1/}creator", default="") or "").strip()
         if not title or not link:
             continue
-        rows.append({
-            "title": title,
-            "author": author or None,
-            "site": site,
-            "format": "HTML",
-            "url": link,
-            "file_size": "Unknown",
-            "download_source": "Substack RSS HTML",
-            "download_url": link,
-        })
+        row = substack_row_from_url(link, title=title, author=author or None)
+        row["site"] = site
+        row["download_source"] = "Substack RSS HTML"
+        rows.append(row)
         if len(rows) >= 10:
             break
     return rows
@@ -1013,9 +1068,9 @@ def parse_substack_search(html, base_url="https://substack.com/search", query=No
         host = parsed.netloc.lower()
         path = parsed.path
         is_post = (
-            host.endswith(".substack.com") and "/p/" in path
+            host.endswith(".substack.com") and ("/p/" in path or "/note/" in path)
         ) or (
-            host == "substack.com" and re.search(r"/@[^/]+/p/", path)
+            host == "substack.com" and re.search(r"/@[^/]+/(?:p|note)/", path)
         )
         if not is_post or full_url in seen:
             continue
@@ -1025,16 +1080,7 @@ def parse_substack_search(html, base_url="https://substack.com/search", query=No
             continue
 
         seen.add(full_url)
-        results.append({
-            "title": text or full_url,
-            "author": None,
-            "site": host,
-            "format": "HTML",
-            "url": full_url,
-            "file_size": "Unknown",
-            "download_source": "Substack HTML",
-            "download_url": full_url,
-        })
+        results.append(substack_row_from_url(full_url, title=text or full_url))
         if len(results) >= 10:
             break
 

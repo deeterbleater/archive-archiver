@@ -464,6 +464,23 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(session.gets[0][0], row["download_url"])
         self.assertEqual(metadata["content_type"], "application/epub+zip")
 
+    def test_annas_slow_download_does_not_use_member_session(self):
+        row = {
+            "id": 1,
+            "work_id": 1,
+            "site": "annas-archive.org",
+            "format": "EPUB",
+            "download_url": "https://annas-archive.gl/slow_download/abc123abc123abc123abc123abc123ab/0/5",
+            "trust_level": "trusted",
+        }
+
+        with mock.patch.object(downloader, "DEFAULT_ANNAS_MEMBER_KEY", "fixture-key"):
+            with mock.patch("downloader.requests.Session") as session:
+                client = downloader._annas_request_client(row, row["download_url"])
+
+        self.assertIs(client, downloader.requests)
+        session.assert_not_called()
+
     def test_http_download_preserves_response_extension_after_quarantine(self):
         class FakeResponse:
             status_code = 200

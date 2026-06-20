@@ -32,6 +32,7 @@ class ScraperSourceTests(unittest.TestCase):
         html = """
         <html><body>
           <a href="https://example.substack.com/p/mutual-aid-notes">Mutual Aid Notes</a>
+          <a href="https://substack.com/@writer/note/c-181571328">Mutual Aid Notebook Dispatch</a>
           <a href="https://example.substack.com/about">About</a>
           <a href="https://substack.com/@writer/p/public-archives">Public Archives</a>
         </body></html>
@@ -39,10 +40,19 @@ class ScraperSourceTests(unittest.TestCase):
 
         rows = scrapers.parse_substack_search(html, query="mutual aid")
 
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["site"], "example.substack.com")
         self.assertEqual(rows[0]["format"], "HTML")
         self.assertEqual(rows[0]["download_url"], "https://example.substack.com/p/mutual-aid-notes")
+        self.assertEqual(rows[1]["download_url"], "https://substack.com/@writer/note/c-181571328")
+
+    def test_substack_direct_note_query_returns_archive_row(self):
+        rows = scrapers.search_substack("https://substack.com/@huryn/note/c-181571328")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["site"], "substack.com")
+        self.assertEqual(rows[0]["format"], "HTML")
+        self.assertEqual(rows[0]["download_url"], "https://substack.com/@huryn/note/c-181571328")
 
     def test_substack_feed_parser_returns_html_rows(self):
         xml = """<?xml version="1.0" encoding="UTF-8"?>
@@ -349,6 +359,7 @@ class ScraperSourceTests(unittest.TestCase):
             <a href="/md5/abc123">Mirror Work</a>
             <a class="js-download-link" href="/fast_download/abc123abc123abc123abc123abc123ab/0/0">Fast Partner Server #1</a>
             <a class="js-download-link" href="/slow_download/abc123abc123abc123abc123abc123ab/0/1">Slow Partner Server #2</a>
+            <a class="js-download-link" href="/slow_download/abc123abc123abc123abc123abc123ab/0/5">Slow Partner Server 5</a>
             <a href="/member_codes?prefix=filepath:x">Codes Explorer</a>
           </body>
         </html>
@@ -361,7 +372,8 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertEqual(len(payload["files"]), 2)
         self.assertEqual(payload["files"][0]["format"], "EPUB")
         self.assertEqual(payload["files"][0]["file_size"], "2.4MB")
-        self.assertIn("/fast_download/", payload["files"][0]["download_url"])
+        self.assertIn("/slow_download/", payload["files"][0]["download_url"])
+        self.assertIn("/0/5", payload["files"][0]["download_url"])
         self.assertNotIn("/md5/", payload["files"][0]["download_url"])
         self.assertEqual(payload["files"][0]["trust_level"], "untrusted")
         best = scrapers.select_best_file(payload["files"])
@@ -372,6 +384,7 @@ class ScraperSourceTests(unittest.TestCase):
             {"format": "PDF", "download_url": "https://annas-archive.gl/md5/abc"},
             {"format": "PDF", "download_url": "https://annas-archive.gl/member_codes?prefix=x"},
             {"format": "PDF", "download_url": "https://annas-archive.gl/fast_download/abc123abc123abc123abc123abc123ab/0/0?short=1"},
+            {"format": "PDF", "download_url": "https://annas-archive.gl/slow_download/abc123abc123abc123abc123abc123ab/0/5?short=1", "download_source": "Slow Partner Server 5"},
             {"format": "EPUB", "download_url": "https://example.org/work.epub"},
         ]
 
@@ -380,7 +393,7 @@ class ScraperSourceTests(unittest.TestCase):
         self.assertEqual(len(filtered), 2)
         self.assertEqual(
             filtered[0]["download_url"],
-            "https://annas-archive.gl/fast_download/abc123abc123abc123abc123abc123ab/0/0",
+            "https://annas-archive.gl/slow_download/abc123abc123abc123abc123abc123ab/0/5",
         )
         self.assertEqual(filtered[1]["download_url"], "https://example.org/work.epub")
 
