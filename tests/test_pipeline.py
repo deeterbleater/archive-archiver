@@ -9,6 +9,7 @@ import corpus
 import db
 import downloader
 import processor
+import text_munger
 import text_validator
 
 
@@ -144,6 +145,55 @@ class PipelineStateTests(unittest.TestCase):
 
         self.assertTrue(payload["usable"])
         self.assertEqual(payload["score"], 0.8)
+
+    def test_text_munger_cleans_training_artifacts(self):
+        raw = (
+            "HEADER 12\n"
+            "This para-\n"
+            "graph has smart “quotes” and a ﬁ ligature.\n"
+            "42\n"
+            "HEADER 13\n\n"
+            "Second paragraph has\u00a0weird spacing.\ufffd\n"
+            "HEADER 14\n"
+        )
+
+        cleaned, stats = text_munger.deterministic_clean(raw)
+
+        self.assertIn('This paragraph has smart "quotes" and a fi ligature.', cleaned)
+        self.assertIn("Second paragraph has weird spacing.", cleaned)
+        self.assertNotIn("HEADER", cleaned)
+        self.assertNotIn("\ufffd", cleaned)
+        self.assertGreaterEqual(stats["removed_running_lines"], 3)
+
+    def test_text_munger_accepts_first_model_json_array(self):
+        response = '[{"type":"literal","from":"bad","to":"good"}]\nextra analysis'
+
+        rules = text_munger.validate_rules(text_munger._extract_json_array(response))
+
+        self.assertEqual(rules[0]["from"], "bad")
+
+    def test_munge_pending_writes_derived_artifact_once(self):
+        self._add_processed_text("Munge Fixture", "Line one-\nbroken line.\n\nLine two.")
+
+        results = text_munger.munge_pending(
+            limit=10,
+            bucket_dir=str(Path(self.tempdir.name) / "munged"),
+        )
+        second = text_munger.munge_pending(
+            limit=10,
+            bucket_dir=str(Path(self.tempdir.name) / "munged"),
+        )
+
+        self.assertEqual(results["processed"], 1)
+        self.assertEqual(second["processed"], 0)
+
+        conn = db.get_connection()
+        row = conn.execute("SELECT * FROM text_munges").fetchone()
+        conn.close()
+        self.assertEqual(row["status"], "processed")
+        munged_path = Path(row["munged_text_uri"].replace("file://", ""))
+        self.assertTrue(munged_path.exists())
+        self.assertIn("Line onebroken line.", munged_path.read_text(encoding="utf-8"))
 
     def test_unusable_texts_are_excluded_from_corpus_candidates(self):
         self._add_processed_text("Bad Bytes", "Readable fixture used for db state.")
@@ -394,6 +444,23 @@ class PipelineStateTests(unittest.TestCase):
         corpus_text = Path(first["corpus_path"]).read_text(encoding="utf-8")
         self.assertIn("The corpus owns the order.", corpus_text)
         self.assertIn("The self owns the corpus.", corpus_text)
+
+    def test_corpus_can_build_from_munged_artifacts(self):
+        self._add_processed_text("Munged Corpus", "Raw para-\ngraph text.")
+        text_munger.munge_pending(
+            limit=10,
+            bucket_dir=str(Path(self.tempdir.name) / "munged"),
+        )
+
+        result = corpus.build_corpus(
+            "munged-corpus",
+            output_dir=str(Path(self.tempdir.name) / "corpora"),
+            use_munged=True,
+        )
+
+        corpus_text = Path(result["corpus_path"]).read_text(encoding="utf-8")
+        self.assertIn("Raw paragraph text.", corpus_text)
+        self.assertNotIn("para-\ngraph", corpus_text)
 
     def test_download_domain_prefers_download_url_host(self):
         row = {

@@ -21,6 +21,7 @@ import memory
 import processor
 import db
 import terminal_theme
+import text_munger
 import text_validator
 
 
@@ -42,6 +43,7 @@ SLASH_COMMANDS = {
     "/download": "download",
     "/process": "process",
     "/validate-texts": "validate_texts",
+    "/munge-texts": "munge_texts",
     "/archive-raw": "archive_raw",
     "/rss-ingest": "rss_ingest",
     "/cycle": "cycle",
@@ -71,7 +73,7 @@ When the user asks to add a new archive, call add_archive with its base URL and 
 You may use Rich terminal markup tags in normal assistant replies: [highlight]important[/highlight], [success]done[/success], [warning]watch this[/warning], [danger]problem[/danger], [muted]quiet detail[/muted], [tool]tool name[/tool]. The default highlight color is pond-scum green via [highlight]...[/highlight]. Use tags sparingly and never wrap JSON tool arguments in markup.
 For long tasks, keep working through tool calls until the requested task is complete, stalled, or blocked by a clear error. Report concrete counts and stopping reason.
 For explicit /goal work, set an estimated completion timer and call finish_goal only when the objective is complete or clearly blocked.
-Slash commands such as /status, /search, /download, /process, /validate-texts, /archive-raw, /rss-ingest, /cycle, /auto, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
+Slash commands such as /status, /search, /download, /process, /validate-texts, /munge-texts, /archive-raw, /rss-ingest, /cycle, /auto, /corpus, /memory, /context, /goal, and /model are still direct operator controls.
 """.strip()
 MAX_TOOL_ITERATIONS = 12
 MAX_GOAL_TOOL_ITERATIONS = 20
@@ -659,6 +661,7 @@ Slash commands:
   /download [--limit N] [--domain-workers]
   /process [--limit N]
   /validate-texts [--limit N] [--workers N]
+  /munge-texts [--limit N] [--use-llm]
   /archive-raw [--limit N]
   /rss-ingest [--limit-per-feed N]
   /cycle [--query QUERY]
@@ -1110,6 +1113,20 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             return
         self.cli.handle_validate_texts(self._namespace(**vars(args)))
 
+    def do_munge_texts(self, line):
+        """Clean processed plaintext into training-ready artifacts: munge-texts [--limit N]."""
+        parser = _parser("munge-texts")
+        parser.add_argument("--limit", type=int, default=self.config["process_limit"])
+        parser.add_argument("--bucket-dir", default=text_munger.DEFAULT_MUNGED_BUCKET_DIR)
+        parser.add_argument("--use-llm", action="store_true")
+        parser.add_argument("--munger-model", default=text_munger.DEFAULT_MUNGER_MODEL)
+        parser.add_argument("--recheck", action="store_true")
+        parser.add_argument("--dry-run", action="store_true")
+        args = self._run_parser(parser, line)
+        if not args:
+            return
+        self.cli.handle_munge_texts(self._namespace(**vars(args)))
+
     def do_archive_raw(self, line):
         """Upload processed raw originals to object storage: /archive-raw [--limit N]."""
         parser = _parser("archive-raw")
@@ -1237,6 +1254,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
         parser.add_argument("--limit", type=int)
         parser.add_argument("--substitutions-file")
         parser.add_argument("--bucket-dir", default=corpus.DEFAULT_CORPUS_BUCKET_DIR)
+        parser.add_argument("--munged", action="store_true")
         args = self._run_parser(parser, line)
         if not args:
             return
@@ -1257,6 +1275,7 @@ Continue this goal. Use web_search for outside knowledge and discovery leads, us
             ("/download", "Download pending files into the raw bucket."),
             ("/process", "Extract plaintext from downloaded files."),
             ("/validate-texts", "Validate plaintext quality and reject unreadable text."),
+            ("/munge-texts", "Clean processed plaintext into training-ready artifacts."),
             ("/archive-raw", "Upload processed raw originals to object storage."),
             ("/rss-ingest", "Archive configured RSS/Atom feed items into the backlog."),
             ("/cycle", "Run one discover-download-process cycle."),

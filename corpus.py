@@ -132,12 +132,14 @@ def build_corpus(
     limit=None,
     substitutions_path=None,
     output_dir=DEFAULT_CORPUS_BUCKET_DIR,
+    use_munged=False,
 ):
     selection = {
         "category": category,
         "site": site,
         "query": query,
         "limit": limit,
+        "use_munged": use_munged,
     }
     substitutions, substitutions_sha256 = load_substitutions(substitutions_path)
     candidates = db.get_processed_extractions(
@@ -145,6 +147,7 @@ def build_corpus(
         site=site,
         query=query,
         limit=limit,
+        use_munged=use_munged,
     )
     candidates = _sort_candidates(candidates, ordering_strategy, seed)
     if not candidates:

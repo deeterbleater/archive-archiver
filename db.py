@@ -408,6 +408,28 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS text_munges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        extraction_id INTEGER NOT NULL,
+        munger_version TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'processed', 'failed')),
+        source_text_sha256 TEXT,
+        munged_text_uri TEXT,
+        munged_text_sha256 TEXT,
+        char_count INTEGER,
+        rules_json TEXT,
+        stats_json TEXT,
+        model TEXT,
+        error TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        processed_at TIMESTAMP,
+        FOREIGN KEY (extraction_id) REFERENCES extractions (id) ON DELETE CASCADE,
+        UNIQUE(extraction_id, munger_version)
+    )
+    """)
+
     _ensure_text_search_tables(cursor)
 
     cursor.execute("""
@@ -1667,7 +1689,7 @@ def mark_raw_archive_failed(download_id, error):
     conn.commit()
     conn.close()
 
-def get_processed_extractions(category=None, site=None, query=None, limit=None):
+def get_processed_extractions(category=None, site=None, query=None, limit=None, use_munged=False, munger_version="text-munger.v1"):
     """Returns extracted plaintext rows eligible for deterministic corpus builds."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -1678,6 +1700,20 @@ def get_processed_extractions(category=None, site=None, query=None, limit=None):
         "COALESCE(extractions.quality_status, 'usable') != 'unusable'",
     ]
     params = []
+    join_munges = ""
+    text_uri_expr = "extractions.text_uri"
+    text_sha256_expr = "extractions.text_sha256"
+    char_count_expr = "extractions.char_count"
+    if use_munged:
+        join_munges = """
+        JOIN text_munges ON text_munges.extraction_id = extractions.id
+            AND text_munges.munger_version = ?
+            AND text_munges.status = 'processed'
+        """
+        text_uri_expr = "text_munges.munged_text_uri"
+        text_sha256_expr = "text_munges.munged_text_sha256"
+        char_count_expr = "text_munges.char_count"
+        params.append(munger_version)
 
     if category:
         filters.append("extractions.category = ?")
@@ -1706,9 +1742,9 @@ def get_processed_extractions(category=None, site=None, query=None, limit=None):
     SELECT
         extractions.id AS extraction_id,
         extractions.extractor,
-        extractions.text_uri,
-        extractions.text_sha256,
-        extractions.char_count,
+        {text_uri_expr} AS text_uri,
+        {text_sha256_expr} AS text_sha256,
+        {char_count_expr} AS char_count,
         extractions.category,
         extractions.quality_status,
         extractions.quality_score,
@@ -1728,6 +1764,7 @@ def get_processed_extractions(category=None, site=None, query=None, limit=None):
     JOIN downloads ON downloads.id = extractions.download_id
     JOIN files ON files.id = downloads.file_id
     JOIN works ON works.id = files.work_id
+    {join_munges}
     WHERE {" AND ".join(filters)}
     ORDER BY works.title COLLATE NOCASE, works.author COLLATE NOCASE, extractions.text_sha256
     {limit_clause}
@@ -1828,6 +1865,149 @@ def add_corpus_build(spec_id, manifest_sha256, manifest_uri, corpus_uri, item_co
     conn.commit()
     conn.close()
     return build_id
+
+def get_munge_candidates(limit=10, munger_version="text-munger.v1", include_munged=False):
+    """Returns processed plaintext rows that need a munged training-text artifact."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    filters = [
+        "extractions.status = 'processed'",
+        "extractions.text_uri IS NOT NULL",
+        "COALESCE(extractions.quality_status, 'usable') != 'unusable'",
+    ]
+    if not include_munged:
+        filters.append("""
+        NOT EXISTS (
+            SELECT 1 FROM text_munges
+            WHERE text_munges.extraction_id = extractions.id
+              AND text_munges.munger_version = ?
+              AND text_munges.status = 'processed'
+        )
+        """)
+        params = [munger_version]
+    else:
+        params = []
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = "LIMIT ?"
+        params.append(limit)
+    cursor.execute(f"""
+    SELECT
+        extractions.id AS extraction_id,
+        extractions.extractor,
+        extractions.text_uri,
+        extractions.text_sha256,
+        extractions.char_count,
+        extractions.category,
+        downloads.id AS download_id,
+        files.id AS file_id,
+        files.work_id,
+        files.site,
+        files.format,
+        works.title,
+        works.author,
+        works.search_query
+    FROM extractions
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE {" AND ".join(filters)}
+    ORDER BY extractions.id
+    {limit_clause}
+    """, params)
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+def mark_text_munge_succeeded(
+    extraction_id,
+    munger_version,
+    source_text_sha256,
+    munged_text_uri,
+    munged_text_sha256,
+    char_count,
+    rules_json,
+    stats_json,
+    model=None,
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO text_munges (
+        extraction_id,
+        munger_version,
+        status,
+        source_text_sha256,
+        munged_text_uri,
+        munged_text_sha256,
+        char_count,
+        rules_json,
+        stats_json,
+        model,
+        error,
+        updated_at,
+        processed_at
+    )
+    VALUES (?, ?, 'processed', ?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(extraction_id, munger_version) DO UPDATE SET
+        status = 'processed',
+        source_text_sha256 = excluded.source_text_sha256,
+        munged_text_uri = excluded.munged_text_uri,
+        munged_text_sha256 = excluded.munged_text_sha256,
+        char_count = excluded.char_count,
+        rules_json = excluded.rules_json,
+        stats_json = excluded.stats_json,
+        model = excluded.model,
+        error = NULL,
+        updated_at = CURRENT_TIMESTAMP,
+        processed_at = CURRENT_TIMESTAMP
+    """, (
+        extraction_id,
+        munger_version,
+        source_text_sha256,
+        munged_text_uri,
+        munged_text_sha256,
+        char_count,
+        rules_json,
+        stats_json,
+        model,
+    ))
+    conn.commit()
+    conn.close()
+
+def mark_text_munge_failed(extraction_id, munger_version, error, model=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO text_munges (
+        extraction_id,
+        munger_version,
+        status,
+        model,
+        error,
+        updated_at
+    )
+    VALUES (?, ?, 'failed', ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(extraction_id, munger_version) DO UPDATE SET
+        status = CASE
+            WHEN text_munges.status = 'processed' THEN text_munges.status
+            ELSE 'failed'
+        END,
+        model = CASE
+            WHEN text_munges.status = 'processed' THEN text_munges.model
+            ELSE excluded.model
+        END,
+        error = CASE
+            WHEN text_munges.status = 'processed' THEN text_munges.error
+            ELSE excluded.error
+        END,
+        updated_at = CASE
+            WHEN text_munges.status = 'processed' THEN text_munges.updated_at
+            ELSE CURRENT_TIMESTAMP
+        END
+    """, (extraction_id, munger_version, model, str(error)))
+    conn.commit()
+    conn.close()
 
 def get_works_by_queries(queries):
     """

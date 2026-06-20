@@ -474,6 +474,27 @@ Run only text extraction:
 python cli.py process --limit 50
 ```
 
+Clean extracted plaintext into training-ready derived artifacts:
+
+```sh
+python cli.py munge-texts --limit 50
+python cli.py munge-texts --limit 10 --use-llm
+```
+
+Text munging:
+
+- Original extracted plaintext is immutable. Cleaned text is written under
+  `ARCHIVE_MUNGED_TEXT_BUCKET_DIR`, defaulting to `bucket/munged-text`.
+- The `text_munges` table records source extraction ID, munger version, output
+  URI, hashes, cleanup stats, and any model-proposed rules that were applied.
+- The default path is deterministic: Unicode normalization, ligature and smart
+  punctuation cleanup, dehyphenation, repeated running header/footer removal,
+  page-number removal, and conservative paragraph unwrapping.
+- `--use-llm` asks OpenRouter for surgical cleanup rules from suspicious-line
+  diagnostics. The model does not rewrite chunks directly; ALGE validates and
+  applies bounded literal/regex rules.
+- `--recheck` regenerates rows that already have a munged artifact.
+
 Archive already-processed raw originals to S3-compatible object storage:
 
 ```sh
@@ -537,6 +558,7 @@ Build a corpus:
 
 ```sh
 python cli.py corpus public-v1 --ordering title --limit 100
+python cli.py corpus training-clean-v1 --munged --ordering title
 ```
 
 ## Testing

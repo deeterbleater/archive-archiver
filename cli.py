@@ -66,6 +66,7 @@ import llm
 import downloader
 import processor
 import corpus
+import text_munger
 import agent
 import dashboard
 import rss_ingest
@@ -1018,6 +1019,21 @@ def handle_validate_texts(args):
     print("=================================================")
 
 
+def handle_munge_texts(args):
+    results = text_munger.munge_pending(
+        limit=args.limit,
+        bucket_dir=args.bucket_dir,
+        use_llm=args.use_llm,
+        model=args.munger_model,
+        include_munged=args.recheck,
+        dry_run=args.dry_run,
+    )
+    print("\n=============== TEXT MUNGING SUMMARY ============")
+    for status, count in results.items():
+        print(f"{status}: {count}")
+    print("=================================================")
+
+
 def handle_archive_raw(args):
     results = processor.archive_processed_raws(
         limit=args.limit,
@@ -1053,6 +1069,7 @@ def handle_corpus(args):
             limit=args.limit,
             substitutions_path=args.substitutions_file,
             output_dir=args.bucket_dir,
+            use_munged=args.munged,
         )
     except corpus.CorpusBuildError as exc:
         print(f"[!] Corpus build failed: {exc}")
@@ -1152,6 +1169,15 @@ def main():
     parser_validate.add_argument("--no-llm", action="store_true", help="Only use local byte/prose heuristics.")
     parser_validate.add_argument("--remove-unusable", action="store_true", help="Remove text artifacts already marked unusable and mark their extraction skipped.")
 
+    # Text Munging Command
+    parser_munge = subparsers.add_parser("munge-texts", help="Clean processed plaintext into training-ready derived artifacts.")
+    parser_munge.add_argument("--limit", type=int, default=25, help="Maximum processed texts to munge in this run.")
+    parser_munge.add_argument("--bucket-dir", default=text_munger.DEFAULT_MUNGED_BUCKET_DIR, help="Filesystem-backed munged text bucket directory.")
+    parser_munge.add_argument("--use-llm", action="store_true", help="Ask the model for validated surgical cleanup rules.")
+    parser_munge.add_argument("--munger-model", default=text_munger.DEFAULT_MUNGER_MODEL, help="OpenRouter model for optional cleanup rule proposals.")
+    parser_munge.add_argument("--recheck", action="store_true", help="Regenerate already munged rows.")
+    parser_munge.add_argument("--dry-run", action="store_true", help="Run munging without writing artifacts or DB rows.")
+
     # Archive Raw Command
     parser_archive_raw = subparsers.add_parser("archive-raw", help="Upload processed raw originals to S3-compatible object storage.")
     parser_archive_raw.add_argument("--limit", type=int, default=10, help="Maximum processed raw downloads to archive.")
@@ -1231,6 +1257,7 @@ def main():
     parser_corpus.add_argument("--limit", type=int, help="Maximum processed texts to include.")
     parser_corpus.add_argument("--substitutions-file", help="JSON object or list of {'from','to'} replacements.")
     parser_corpus.add_argument("--bucket-dir", default=corpus.DEFAULT_CORPUS_BUCKET_DIR, help="Filesystem-backed corpus artifact directory.")
+    parser_corpus.add_argument("--munged", action="store_true", help="Build from munged training-text artifacts instead of raw extracted plaintext.")
 
     # Sticky tmux Dashboard
     parser_dashboard = subparsers.add_parser("dashboard", help="Render a compact live dashboard for the archiver.")
@@ -1273,6 +1300,8 @@ def main():
         handle_process(args)
     elif args.command == "validate-texts":
         handle_validate_texts(args)
+    elif args.command == "munge-texts":
+        handle_munge_texts(args)
     elif args.command == "archive-raw":
         handle_archive_raw(args)
     elif args.command == "rss-ingest":
