@@ -69,6 +69,7 @@ import corpus
 import text_munger
 import agent
 import dashboard
+import tui
 import rss_ingest
 import terminal_theme
 import text_validator
@@ -1093,6 +1094,15 @@ def handle_dashboard(args):
     )
 
 
+def handle_tui(args):
+    tui.run_tui(
+        BANNER_LINES,
+        watch=args.watch,
+        interval=args.interval,
+        view=args.view,
+    )
+
+
 def handle_agent_status(args):
     row = db.add_agent_status(
         " ".join(args.message),
@@ -1264,6 +1274,12 @@ def main():
     parser_dashboard.add_argument("--watch", action="store_true", help="Continuously refresh the dashboard.")
     parser_dashboard.add_argument("--interval", type=float, default=2.0, help="Refresh interval in seconds for --watch.")
 
+    # Full terminal UI
+    parser_tui = subparsers.add_parser("tui", help="Render the full live terminal UI for the archiver.")
+    parser_tui.add_argument("--watch", action="store_true", help="Continuously refresh the terminal UI.")
+    parser_tui.add_argument("--interval", type=float, default=2.0, help="Refresh interval in seconds for --watch.")
+    parser_tui.add_argument("--view", choices=tui.VIEWS, default="overview", help="Initial TUI view.")
+
     # Agent status log command
     parser_agent_status = subparsers.add_parser("agent-status", help="Write a short agent status update for live dashboards.")
     parser_agent_status.add_argument("message", nargs="+", help="One or two sentence status update.")
@@ -1283,7 +1299,7 @@ def main():
     )
     
     args = parser.parse_args()
-    if not os.getenv("ALGE_NO_BANNER") and args.command not in ("dashboard", "agent-status"):
+    if not os.getenv("ALGE_NO_BANNER") and args.command not in ("dashboard", "tui", "agent-status"):
         print_banner()
     
     if args.command == "search":
@@ -1314,6 +1330,8 @@ def main():
         handle_corpus(args)
     elif args.command == "dashboard":
         handle_dashboard(args)
+    elif args.command == "tui":
+        handle_tui(args)
     elif args.command == "agent-status":
         handle_agent_status(args)
     elif args.command == "agent":

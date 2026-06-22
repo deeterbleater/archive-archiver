@@ -159,7 +159,21 @@ session named `alge`. If that session already exists, the launcher reconnects
 to it, so closing a terminal does not kill the harness. Command-mode usage such
 as `alge -c "/status"` runs directly and does not attach to tmux. Use
 `alge --no-tmux` or `ALGE_NO_TMUX=1 alge` to force direct interactive mode.
-Set `ALGE_TMUX_SESSION=name` to use a different session name.
+Set `ALGE_TMUX_SESSION=name` to use a different session name. The managed tmux
+window includes a live TUI pane above the agent prompt; tune its size with
+`ALGE_TUI_HEIGHT=32`.
+
+Render the full TUI directly:
+
+```sh
+python cli.py tui
+python cli.py tui --view failures
+python cli.py tui --watch --interval 2
+```
+
+In watch mode, focus the TUI pane and press `o` overview, `w` queue, `f`
+failures, `a` activity, `c` controls, `Tab`/`n` next view, `p`/`h` previous
+view, or `q` quit.
 
 The harness gives you an `alge>` prompt for directing the pipeline without
 remembering every full command. Anything typed without a leading slash is sent

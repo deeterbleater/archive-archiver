@@ -868,6 +868,106 @@ def get_backlog_counts(extractor="plaintext.v2"):
         "pending_raw_archives": pending_raw_archives,
     }
 
+
+def get_recent_failed_downloads(limit=5):
+    limit = max(1, min(int(limit or 5), 25))
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT
+        downloads.id,
+        downloads.file_id,
+        downloads.http_status,
+        downloads.error,
+        downloads.updated_at,
+        files.site,
+        files.format,
+        works.title,
+        works.author
+    FROM downloads
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE downloads.status = 'failed'
+    ORDER BY downloads.updated_at DESC, downloads.id DESC
+    LIMIT ?
+    """, (limit,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_recent_pipeline_failures(limit=5):
+    limit = max(1, min(int(limit or 5), 25))
+    conn = get_connection()
+    cursor = conn.cursor()
+    failures = []
+
+    cursor.execute("""
+    SELECT
+        'download' AS stage,
+        downloads.id AS id,
+        downloads.http_status AS status_code,
+        downloads.error AS error,
+        downloads.updated_at AS updated_at,
+        files.site AS site,
+        files.format AS format,
+        works.title AS title,
+        works.author AS author
+    FROM downloads
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE downloads.status = 'failed'
+    ORDER BY downloads.updated_at DESC, downloads.id DESC
+    LIMIT ?
+    """, (limit,))
+    failures.extend(dict(row) for row in cursor.fetchall())
+
+    cursor.execute("""
+    SELECT
+        'text' AS stage,
+        extractions.id AS id,
+        NULL AS status_code,
+        extractions.error AS error,
+        extractions.updated_at AS updated_at,
+        files.site AS site,
+        files.format AS format,
+        works.title AS title,
+        works.author AS author
+    FROM extractions
+    JOIN downloads ON downloads.id = extractions.download_id
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE extractions.status = 'failed'
+    ORDER BY extractions.updated_at DESC, extractions.id DESC
+    LIMIT ?
+    """, (limit,))
+    failures.extend(dict(row) for row in cursor.fetchall())
+
+    cursor.execute("""
+    SELECT
+        'raw' AS stage,
+        downloads.id AS id,
+        NULL AS status_code,
+        downloads.raw_archive_error AS error,
+        downloads.updated_at AS updated_at,
+        files.site AS site,
+        files.format AS format,
+        works.title AS title,
+        works.author AS author
+    FROM downloads
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE downloads.raw_archive_status = 'failed'
+    ORDER BY downloads.updated_at DESC, downloads.id DESC
+    LIMIT ?
+    """, (limit,))
+    failures.extend(dict(row) for row in cursor.fetchall())
+
+    conn.close()
+    failures.sort(key=lambda row: (str(row.get("updated_at") or ""), int(row.get("id") or 0)), reverse=True)
+    return failures[:limit]
+
+
 def get_pending_download_files(limit=10):
     """Returns one preferred pending file per work with no prior download attempt."""
     conn = get_connection()
