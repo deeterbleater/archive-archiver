@@ -212,6 +212,72 @@ def _summary_panel(stats, backlog, workers, scans, freshness=None):
     )
 
 
+def _compact_summary_panel(stats, backlog, workers, scans, freshness=None):
+    downloads = stats.get("downloads_by_status", {})
+    extractions = stats.get("extractions_by_status", {})
+    raw_archives = stats.get("raw_archives_by_status", {})
+    pending_total = _pending_total(backlog)
+    failure_total = _failure_total(stats, backlog, workers)
+    _state, state_style, state_reason = _health_state(backlog, workers, scans, stats, freshness=freshness)
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(style="muted", no_wrap=True)
+    table.add_column(justify="right", no_wrap=True)
+    table.add_column(style="muted", no_wrap=True)
+    table.add_column(justify="right", no_wrap=True)
+    table.add_row(
+        "queue",
+        Text(str(pending_total), style=_count_style(pending_total)),
+        "fail",
+        Text(str(failure_total), style="danger" if failure_total else "success"),
+    )
+    table.add_row(
+        "raw",
+        Text(str(downloads.get("downloaded", 0)), style="tool"),
+        "text",
+        Text(str(extractions.get("processed", 0)), style="success"),
+    )
+    table.add_row(
+        "s3",
+        Text(str(raw_archives.get("archived", 0)), style="highlight"),
+        "seen",
+        Text(_freshness_age(freshness), style=_freshness_style(freshness)),
+    )
+    detail = Text()
+    detail.append(state_reason, style=state_style)
+    detail.append("  ")
+    detail.append("workers ", style="muted")
+    detail.append(str(workers["running"]), style="tool" if workers["running"] else "muted")
+    detail.append(" run  ", style="muted")
+    detail.append(str(workers["failed"]), style="danger" if workers["failed"] else "success")
+    detail.append(" fail", style="muted")
+    return _panel(Group(table, Align.center(detail)), "Pipeline / Backlog", border_style=state_style)
+
+
+def _failure_summary_panel(stats, backlog, workers, scans):
+    extractions = stats.get("extractions_by_status", {})
+    raw_archives = stats.get("raw_archives_by_status", {})
+    failures = [
+        ("downloads", backlog["failed_downloads"]),
+        ("text", int(extractions.get("failed", 0) or 0)),
+        ("raw", int(raw_archives.get("failed", 0) or 0)),
+        ("workers", workers["failed"]),
+        ("quarantine", scans.get("infected", 0)),
+    ]
+    total = _failure_total(stats, backlog, workers) + int(scans.get("infected", 0) or 0)
+    table = Table.grid(expand=True, padding=(0, 1))
+    for _index in range(6):
+        table.add_column(justify="center")
+    table.add_row(
+        Text("total", style="muted"),
+        *(Text(label, style="muted") for label, _value in failures),
+    )
+    table.add_row(
+        Text(str(total), style="danger" if total else "success"),
+        *(Text(str(value), style="danger" if value else "success") for _label, value in failures),
+    )
+    return _panel(table, "Failure Summary", border_style="danger" if total else "success")
+
+
 def _status_token(label, value, style):
     token = Text()
     token.append(f"{label} ", style="muted")
@@ -248,8 +314,8 @@ def _hero(stats, backlog, workers, scans, freshness=None, view="overview"):
     state, state_style, _reason = _health_state(backlog, workers, scans, stats, freshness=freshness)
     view_label, view_description = _view_detail(view)
     table = Table.grid(expand=True)
-    table.add_column(ratio=1)
-    table.add_column(justify="right", no_wrap=True)
+    table.add_column(no_wrap=True)
+    table.add_column(justify="right", ratio=1)
     title = Text("ALGE", style="bold highlight")
     metrics = Text()
     tokens = [
@@ -290,12 +356,40 @@ def _recent_activity(limit=6):
         return _panel(table, "Activity")
 
     for row in rows:
-        created_at = str(row.get("created_at") or "")[-8:]
+        created_at = _activity_time_label(row.get("created_at"))
         phase = str(row.get("phase") or "update")
         message = _activity_message(str(row.get("message") or "").strip())
         label, style = _activity_label(phase, message)
         table.add_row(created_at, Text(label, style=style), Text(_shorten(message, 68), overflow="ellipsis", no_wrap=True))
     return _panel(table, "Activity")
+
+
+def _activity_summary_panel(limit=24):
+    rows = db.get_recent_agent_statuses(limit=limit)
+    counts = {"done": 0, "run": 0, "wait": 0, "fail": 0, "note": 0}
+    for row in rows:
+        message = _activity_message(str(row.get("message") or "").strip())
+        label, _style = _activity_label(str(row.get("phase") or "update"), message)
+        if label in counts:
+            counts[label] += 1
+        else:
+            counts["note"] += 1
+
+    table = Table.grid(expand=True, padding=(0, 2))
+    for _index in range(len(counts)):
+        table.add_column(justify="center")
+    table.add_row(*(Text(label, style="muted") for label in counts))
+    table.add_row(
+        *(Text(str(counts[label]), style=("danger" if label == "fail" and counts[label] else "success" if counts[label] else "muted")) for label in counts)
+    )
+    return _panel(table, "Activity Summary", border_style="danger" if counts["fail"] else "pond")
+
+
+def _activity_time_label(created_at, now=None):
+    age = _age_from_timestamp(created_at, now=now)
+    if age:
+        return age
+    return str(created_at or "")[-8:]
 
 
 def _activity_message(message):
@@ -418,6 +512,20 @@ def _command_reference():
     return _panel(table, "Controls")
 
 
+def _compact_command_reference():
+    table = Table.grid(expand=True, padding=(0, 1))
+    for _index in range(2):
+        table.add_column(ratio=1)
+    for row_start in range(0, len(COMMANDS), 2):
+        cells = []
+        for label, command, hint in COMMANDS[row_start: row_start + 2]:
+            cells.append(Text.assemble((command, "highlight"), ("  "), (label, "label"), (" / "), (hint, "muted")))
+        while len(cells) < 2:
+            cells.append(Text(""))
+        table.add_row(*cells)
+    return _panel(table, "Command Reference")
+
+
 def _command_examples(view="overview", backlog=None, workers=None, scans=None, stats=None, limit=None):
     view = _normalize_view(view)
     rows = list(ACTION_EXAMPLES.get(view) or ACTION_EXAMPLES["overview"])
@@ -446,16 +554,18 @@ def _command_examples(view="overview", backlog=None, workers=None, scans=None, s
         rows = rows[:limit]
 
     table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(style="muted", no_wrap=True)
     table.add_column(style="label", no_wrap=True)
     table.add_column(ratio=2)
     table.add_column(ratio=1)
-    for label, command, hint in rows:
+    for index, (label, command, hint) in enumerate(rows, start=1):
         table.add_row(
+            Text(f"{index}.", style="muted"),
             label,
             Text(command, style="highlight", overflow="ellipsis", no_wrap=True),
             Text(hint, style="muted", overflow="ellipsis", no_wrap=True),
         )
-    return _panel(table, "Actions", border_style="tool")
+    return _panel(table, "Next Actions", border_style="tool")
 
 
 def _format_title(row):
@@ -529,6 +639,26 @@ def _queue_preview(download_limit=2, extraction_limit=2, raw_limit=1):
                 meta,
             )
     return _panel(table, "Queue")
+
+
+def _overview_queue_panel(backlog):
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(style="label", no_wrap=True)
+    table.add_column(justify="right", no_wrap=True)
+    table.add_column(ratio=2)
+    rows = [
+        ("download", backlog["pending_downloads"], db.get_pending_download_files(limit=1), "No pending download candidates."),
+        ("text", backlog["pending_extractions"], db.get_pending_extractions(limit=1, extractor=processor.EXTRACTOR_VERSION), "No downloaded files waiting for text extraction."),
+        ("raw", backlog["pending_raw_archives"], db.get_raw_archive_candidates(limit=1), "Clear."),
+    ]
+    for label, count, queue_rows, empty in rows:
+        preview = _shorten(_format_title(queue_rows[0]), 46) if queue_rows else empty
+        table.add_row(
+            label,
+            Text(str(count), style=_count_style(count)),
+            Text(preview, style="muted" if not queue_rows else "label", overflow="ellipsis", no_wrap=True),
+        )
+    return _panel(table, "Work Queue")
 
 
 def _triage_panel(limit=2):
@@ -607,8 +737,9 @@ def _view_bar(active_view, interactive=False):
         if index:
             line.append("  ")
         key = {"overview": "o", "queue": "w", "failures": "f", "activity": "a", "controls": "c"}[view]
+        label = {"overview": "overview", "queue": "queue", "failures": "fail", "activity": "activity", "controls": "controls"}[view]
         style = "reverse highlight" if view == active_view else "muted"
-        line.append(f" {key} {view} ", style=style)
+        line.append(f" {key} {label} ", style=style)
     if interactive:
         keys = Text("tab/n next   p/h prev   q quit", style="muted")
         return Group(Align.center(line), Align.center(keys))
@@ -637,41 +768,41 @@ def _operation_hint(backlog, workers, scans=None, stats=None, view="overview"):
     raw_archives = stats.get("raw_archives_by_status", {})
     if view == "queue":
         if backlog["pending_extractions"]:
-            return Text("Queue action: run /process --limit 25 in the agent pane.", style="highlight")
+            return Text("Run /process --limit 25", style="highlight")
         if backlog["pending_downloads"]:
-            return Text("Queue action: run /download --limit 25 --domain-workers in the agent pane.", style="highlight")
+            return Text("Run /download --limit 25 --domain-workers", style="highlight")
         if backlog["pending_raw_archives"]:
-            return Text("Queue action: run /archive-raw --limit 25 in the agent pane.", style="highlight")
-        return Text("Queue is clear. Use /search or /auto to add more work.", style="success")
+            return Text("Run /archive-raw --limit 25", style="highlight")
+        return Text("Queue clear. Use /search or /auto.", style="success")
     if view == "failures":
         if scans.get("infected", 0):
-            return Text("Failure action: inspect quarantine before promoting untrusted files.", style="danger")
+            return Text("Inspect quarantine before promotion.", style="danger")
         if workers["failed"]:
-            return Text("Failure action: run /status, then restart failed background work.", style="danger")
+            return Text("Run /status, then restart failed work.", style="danger")
         if backlog["failed_downloads"] or extractions.get("failed", 0) or raw_archives.get("failed", 0):
-            return Text("Failure action: inspect Triage rows, then rerun or exclude bad sources intentionally.", style="danger")
+            return Text("Review Triage, then retry or exclude.", style="danger")
         return Text("No recent pipeline failures in triage.", style="success")
     if view == "activity":
         if workers["running"]:
-            return Text("Activity action: watch for fresh done/fail rows before starting overlapping work.", style="tool")
-        return Text("Activity action: use /auto --status or /goal to check long-running work.", style="highlight")
+            return Text("Watch for fresh done/fail rows.", style="tool")
+        return Text("Check /auto --status or /goal.", style="highlight")
     if view == "controls":
-        return Text("Controls action: type the shown slash command in the agent pane below.", style="highlight")
+        return Text("Type a slash command in the agent pane.", style="highlight")
     if scans.get("infected", 0):
-        return Text("Next: quarantine review before moving more untrusted files.", style="danger")
+        return Text("Next: review quarantine.", style="danger")
     if workers["failed"]:
         return Text("Next: inspect /status, then restart failed work.", style="danger")
     if backlog["failed_downloads"] or extractions.get("failed", 0) or raw_archives.get("failed", 0):
-        return Text("Next: review pipeline failures before expanding the queue.", style="danger")
+        return Text("Next: review pipeline failures before queue growth.", style="danger")
     if workers["running"]:
         return Text("Workers active. Watch activity for stalls.", style="tool")
     if backlog["pending_extractions"]:
-        return Text("Next: /process --limit 25  (downloaded files need text)", style="highlight")
+        return Text("Next: /process --limit 25", style="highlight")
     if backlog["pending_downloads"]:
-        return Text("Next: /download --limit 25 --domain-workers  (works are queued)", style="highlight")
+        return Text("Next: /download --limit 25 --domain-workers", style="highlight")
     if backlog["pending_raw_archives"]:
-        return Text("Next: /archive-raw --limit 25  (processed raw files are local)", style="highlight")
-    return Text("Pipeline queue is clear. Use /search or /auto to expand the corpus.", style="success")
+        return Text("Next: /archive-raw --limit 25", style="highlight")
+    return Text("Queue clear. Use /search or /auto.", style="success")
 
 
 def _collect_state():
@@ -683,10 +814,13 @@ def _collect_state():
     return stats, backlog, workers, scans, freshness
 
 
-def _footer(backlog, workers, scans, stats, state_style, view="overview", interactive=False):
+def _footer(backlog, workers, scans, stats, state_style, view="overview", interactive=False, compact=False):
+    cue = _operation_hint(backlog, workers, scans, stats, view=view)
+    if compact:
+        return _panel(Align.center(cue), "Operator Cue", border_style=state_style)
     parts = [
         Align.center(_compact_goal()),
-        _panel(Align.center(_operation_hint(backlog, workers, scans, stats, view=view)), "Operator Cue", border_style=state_style),
+        _panel(Align.center(cue), "Operator Cue", border_style=state_style),
     ]
     parts.append(Align.center(Text("tmux persistent  close terminal anytime  run alge to reconnect", style="muted")))
     return Group(
@@ -710,6 +844,7 @@ def _render_full(stats, backlog, workers, scans, freshness=None, view="overview"
         return Group(
             top,
             _summary_panel(stats, backlog, workers, scans, freshness=freshness),
+            _failure_summary_panel(stats, backlog, workers, scans),
             _triage_panel(limit=8) or _panel(Text("No recent pipeline failures.", style="success"), "Triage", border_style="success"),
             _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats),
             _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
@@ -717,6 +852,7 @@ def _render_full(stats, backlog, workers, scans, freshness=None, view="overview"
     if view == "activity":
         return Group(
             top,
+            _activity_summary_panel(limit=24),
             _recent_activity(limit=12),
             _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats),
             _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
@@ -728,81 +864,65 @@ def _render_full(stats, backlog, workers, scans, freshness=None, view="overview"
             _command_reference(),
             _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
         )
-    backlog_panel = _metric_table(
-        "Backlog",
-        [
-            ("pending downloads", backlog["pending_downloads"], _count_style(backlog["pending_downloads"])),
-            ("pending text", backlog["pending_extractions"], _count_style(backlog["pending_extractions"])),
-            ("raw archive", backlog["pending_raw_archives"], _count_style(backlog["pending_raw_archives"])),
-            ("failed downloads", backlog["failed_downloads"], "danger" if backlog["failed_downloads"] else "success"),
-            ("infected", scans.get("infected", 0), "danger" if scans.get("infected", 0) else "success"),
-        ],
-        border_style=state_style if state != "running" else "pond",
-    )
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(ratio=1)
-    grid.add_column(ratio=2)
-    grid.add_row(backlog_panel, _queue_preview())
+    grid.add_column(ratio=1)
+    triage = _triage_panel() if backlog["failed_downloads"] else None
+    grid.add_row(_overview_queue_panel(backlog), triage or _recent_activity(limit=3))
     return Group(
         top,
         _summary_panel(stats, backlog, workers, scans, freshness=freshness),
         grid,
-        _triage_panel() if backlog["failed_downloads"] else Group(),
-        _recent_activity(limit=4),
+        _recent_activity(limit=4) if triage else Group(),
         _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=3),
         _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
     )
 
 
-def _render_compact(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False):
+def _render_compact(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False, height=None):
     view = _normalize_view(view)
     state, state_style, _reason = _health_state(backlog, workers, scans, stats, freshness=freshness)
+    tight = bool(height and height <= 20)
     if view == "queue":
-        return Group(
+        parts = [
             _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
             _queue_preview(download_limit=5, extraction_limit=4, raw_limit=2),
-            _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=2),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
-        )
+        ]
+        if not tight:
+            parts.append(_command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=2))
+        parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True))
+        return Group(*parts)
     if view == "failures":
-        return Group(
+        parts = [
             _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
             _triage_panel(limit=5) or _panel(Text("No recent pipeline failures.", style="success"), "Triage", border_style="success"),
-            _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=2),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
-        )
+        ]
+        if not tight:
+            parts.append(_command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=2))
+        parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True))
+        return Group(*parts)
     if view == "activity":
         return Group(
             _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
             _recent_activity(limit=7),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True),
         )
     if view == "controls":
-        return Group(
+        parts = [
             _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
-            _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=3),
-            _command_reference(),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
-        )
-    backlog_panel = _metric_table(
-        "Backlog",
-        [
-            ("downloads", backlog["pending_downloads"], _count_style(backlog["pending_downloads"])),
-            ("text", backlog["pending_extractions"], _count_style(backlog["pending_extractions"])),
-            ("raw", backlog["pending_raw_archives"], _count_style(backlog["pending_raw_archives"])),
-            ("failed", _failure_total(stats, backlog, workers), "danger" if _failure_total(stats, backlog, workers) else "success"),
-        ],
-        border_style=state_style if state != "running" else "pond",
-    )
-    grid = Table.grid(expand=True, padding=(0, 1))
-    grid.add_column(ratio=1)
-    grid.add_column(ratio=2)
-    grid.add_row(backlog_panel, _attention_panel(backlog, compact=True))
+        ]
+        if not tight:
+            parts.append(_command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=3))
+        parts.extend([
+            _compact_command_reference(),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True),
+        ])
+        return Group(*parts)
     return Group(
         _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
-        _summary_panel(stats, backlog, workers, scans, freshness=freshness),
-        grid,
-        _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
+        _compact_summary_panel(stats, backlog, workers, scans, freshness=freshness),
+        _attention_panel(backlog, compact=True),
+        _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True),
     )
 
 
@@ -810,7 +930,7 @@ def render_tui(logo_lines, height=None, view="overview", interactive=False):
     stats, backlog, workers, scans, freshness = _collect_state()
     height = terminal_theme.console.height if height is None else height
     if height and height < COMPACT_HEIGHT:
-        return _render_compact(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive)
+        return _render_compact(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, height=height)
     return _render_full(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive)
 
 
