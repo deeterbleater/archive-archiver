@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from rich.console import Console
 
@@ -123,12 +124,20 @@ class TuiTests(unittest.TestCase):
         self.assertIn("Operator Cue", output)
         self.assertNotIn("Next Actions", output)
 
-    def test_tight_compact_selected_views_fit_twenty_lines(self):
-        for view in ("queue", "failures", "controls"):
-            with self.subTest(view=view):
-                output = render_text(tui.render_tui(["ALGE"], height=20, view=view, interactive=True), width=80)
+    def test_narrow_queue_uses_short_empty_stage_labels(self):
+        output = render_text(tui.render_tui(["ALGE"], height=20, view="queue", interactive=True, width=50), width=50)
 
-                self.assertLessEqual(len(output.splitlines()), 20)
+        self.assertIn("No files need text.", output)
+        self.assertIn("No raw files ready.", output)
+        self.assertNotIn("No downloaded files waiting", output)
+
+    def test_tight_compact_selected_views_fit_twenty_lines(self):
+        for width in (50, 80):
+            for view in ("overview", "queue", "failures", "activity", "controls"):
+                with self.subTest(view=view, width=width):
+                    output = render_text(tui.render_tui(["ALGE"], height=20, view=view, interactive=True, width=width), width=width)
+
+                    self.assertLessEqual(len(output.splitlines()), 20)
 
     def test_full_controls_view_keeps_reference_grid(self):
         with terminal_theme.console.capture() as capture:
@@ -136,8 +145,14 @@ class TuiTests(unittest.TestCase):
 
         output = capture.get()
         self.assertIn("Controls", output)
+        self.assertIn("command", output)
+        self.assertIn("role", output)
+        self.assertIn("use", output)
         self.assertIn("discover", output)
         self.assertIn("archive", output)
+        self.assertIn("find and queue new public-domain", output)
+        self.assertIn("works", output)
+        self.assertIn("extract readable text", output)
 
     def test_compact_command_reference_uses_two_column_reference(self):
         with terminal_theme.console.capture() as capture:
@@ -147,6 +162,8 @@ class TuiTests(unittest.TestCase):
         self.assertIn("Command Reference", output)
         self.assertIn("/search", output)
         self.assertIn("/download", output)
+        self.assertIn("discover / find", output)
+        self.assertNotIn("find and queue new public-domain works", output)
 
     def test_view_aliases_are_normalized(self):
         self.assertEqual(tui._normalize_view("triage"), "failures")
@@ -190,12 +207,22 @@ class TuiTests(unittest.TestCase):
         console = Console(width=60, theme=terminal_theme.THEME, highlight=False)
 
         with console.capture() as capture:
-            console.print(tui.render_tui(["ALGE"], height=20, view="overview", interactive=True))
+            console.print(tui.render_tui(["ALGE"], height=20, view="overview", interactive=True, width=60))
 
         output = capture.get()
         self.assertIn("ALGE", output)
         self.assertIn("f fail", output)
         self.assertIn("c controls", output)
+
+    def test_very_narrow_header_uses_compact_nav(self):
+        output = render_text(tui.render_tui(["ALGE"], height=20, view="overview", interactive=True, width=50), width=50)
+
+        self.assertIn("ALGE  state", output)
+        self.assertIn(" o ", output)
+        self.assertIn(" c ", output)
+        self.assertIn("tab/n   p/h   q", output)
+        self.assertNotIn("ALGEstate", output)
+        self.assertNotIn("c controls", output)
 
     def test_tui_renders_recent_agent_activity(self):
         db.add_agent_status("working through backlog", phase="update")
@@ -218,6 +245,35 @@ class TuiTests(unittest.TestCase):
         self.assertIn("done", output)
         self.assertIn("fail", output)
         self.assertIn("wait", output)
+
+    def test_activity_count_styles_match_activity_meaning(self):
+        self.assertEqual(tui._activity_count_style("done", 1), "success")
+        self.assertEqual(tui._activity_count_style("run", 1), "tool")
+        self.assertEqual(tui._activity_count_style("wait", 1), "warning")
+        self.assertEqual(tui._activity_count_style("fail", 1), "danger")
+        self.assertEqual(tui._activity_count_style("run", 0), "muted")
+
+    def test_activity_summary_explains_recent_failures(self):
+        db.add_agent_status("Batch search-456 failed: archive_org / Bad", phase="failed")
+
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(tui._activity_summary_panel(limit=5))
+
+        self.assertIn("recent failures need review", capture.get())
+
+    def test_activity_decision_prioritizes_failures_then_running_work(self):
+        failure = tui._activity_decision({"done": 2, "run": 1, "wait": 0, "fail": 1, "note": 0})
+        running = tui._activity_decision({"done": 0, "run": 2, "wait": 0, "fail": 0, "note": 0})
+
+        self.assertIn("failures need review", failure.plain)
+        self.assertIn("watch for done/fail", running.plain)
+
+    def test_activity_decision_guides_idle_and_complete_states(self):
+        waiting = tui._activity_decision({"done": 0, "run": 0, "wait": 1, "fail": 0, "note": 0})
+        done = tui._activity_decision({"done": 3, "run": 0, "wait": 0, "fail": 0, "note": 0})
+
+        self.assertIn("choose the next command", waiting.plain)
+        self.assertIn("recent completions", done.plain)
 
     def test_full_activity_view_includes_activity_summary(self):
         db.add_agent_status("working through backlog", phase="update")
@@ -246,6 +302,42 @@ class TuiTests(unittest.TestCase):
         output = capture.get()
         self.assertIn("controls", output)
         self.assertIn("slash commands for direct operation", output)
+
+    def test_queue_header_focus_calls_out_bottleneck(self):
+        work_id = db.add_work("Needs Download", author="Example Author", search_query="queue")
+        db.add_file(
+            work_id,
+            site="archive.example",
+            format="PDF",
+            url="https://archive.example/work.pdf",
+            download_url="https://archive.example/work.pdf",
+        )
+
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(tui.render_tui(["ALGE"], height=40, view="queue"))
+
+        self.assertIn("downloads ready", capture.get())
+
+    def test_failures_header_focus_counts_triage_issues(self):
+        stats = {"extractions_by_status": {"failed": 2}, "raw_archives_by_status": {}}
+        backlog = {
+            "pending_downloads": 0,
+            "pending_extractions": 0,
+            "pending_raw_archives": 0,
+            "failed_downloads": 1,
+        }
+        workers = {"total": 1, "running": 0, "idle": 0, "failed": 1}
+        scans = {"infected": 1}
+
+        focus = tui._view_focus_text("failures", backlog, workers, scans, stats)
+
+        self.assertEqual(focus.plain, "5 issues in triage")
+
+    def test_controls_header_focus_shows_primary_command(self):
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(tui.render_tui(["ALGE"], height=40, view="controls"))
+
+        self.assertIn("primary /search", capture.get())
 
     def test_operator_cue_prioritizes_failures(self):
         backlog = {
@@ -302,7 +394,112 @@ class TuiTests(unittest.TestCase):
         process_line = next(line for line in lines if "/process --limit 25" in line)
 
         self.assertIn("process", process_line)
-        self.assertIn("1.", process_line)
+        self.assertIn("now", process_line)
+
+    def test_next_actions_do_not_look_like_number_key_shortcuts(self):
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(tui._command_examples("overview", limit=3))
+
+        output = capture.get()
+        self.assertIn("now", output)
+        self.assertIn("next", output)
+        self.assertIn("later", output)
+        self.assertNotIn("1.", output)
+
+    def test_tmux_interactive_view_bar_shows_enter_paste_hint(self):
+        with patch.dict(tui.os.environ, {"TMUX": "/tmp/tmux"}):
+            with terminal_theme.console.capture() as capture:
+                terminal_theme.console.print(tui._view_bar("queue", interactive=True))
+
+        self.assertIn("enter paste", capture.get())
+
+    def test_primary_action_matches_prioritized_queue_command(self):
+        backlog = {
+            "pending_downloads": 4,
+            "pending_extractions": 2,
+            "pending_raw_archives": 1,
+            "failed_downloads": 0,
+        }
+        workers = {"total": 0, "running": 0, "idle": 0, "failed": 0}
+
+        label, command, hint = tui._primary_action("queue", backlog=backlog, workers=workers)
+
+        self.assertEqual(label, "process")
+        self.assertEqual(command, "/process --limit 25")
+        self.assertIn("extract", hint)
+
+    def test_full_tui_shows_primary_command_tray(self):
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(tui.render_tui(["ALGE"], height=40, view="queue"))
+
+        output = capture.get()
+        self.assertIn("Primary Command", output)
+        self.assertIn("/download --limit 25 --domain-workers", output)
+
+    def test_compact_interactive_footer_explains_enter_action_in_tmux(self):
+        with patch.dict(tui.os.environ, {"TMUX": "/tmp/tmux"}):
+            output = render_text(tui.render_tui(["ALGE"], height=20, view="queue", interactive=True), width=80)
+
+        self.assertIn("enter paste", output)
+        self.assertIn("/download --limit 25 --domain-workers", output)
+
+    def test_notice_line_accepts_plain_text_for_compatibility(self):
+        with terminal_theme.console.capture() as capture:
+            terminal_theme.console.print(tui._notice_line("pasted /status"))
+
+        self.assertIn("pasted /status", capture.get())
+
+    def test_footer_renders_success_and_error_notices(self):
+        stats = {
+            "downloads_by_status": {},
+            "extractions_by_status": {},
+            "raw_archives_by_status": {},
+        }
+        backlog = {
+            "pending_downloads": 0,
+            "pending_extractions": 0,
+            "pending_raw_archives": 0,
+            "failed_downloads": 0,
+        }
+        workers = {"total": 0, "running": 0, "idle": 0, "failed": 0}
+        scans = {}
+
+        with terminal_theme.console.capture() as success_capture:
+            terminal_theme.console.print(tui._footer(backlog, workers, scans, stats, "success", notice=("success", "pasted /status; review and press Enter")))
+        with terminal_theme.console.capture() as error_capture:
+            terminal_theme.console.print(tui._footer(backlog, workers, scans, stats, "danger", notice=("danger", "tmux: pane not found")))
+
+        self.assertIn("pasted /status", success_capture.get())
+        self.assertIn("review and press Enter", success_capture.get())
+        self.assertIn("tmux: pane not found", error_capture.get())
+
+    def test_send_command_to_agent_requires_tmux(self):
+        with patch.dict(tui.os.environ, {}, clear=True):
+            ok, message = tui._send_command_to_agent("/status")
+
+        self.assertFalse(ok)
+        self.assertIn("not running inside tmux", message)
+
+    def test_send_command_to_agent_pastes_without_executing(self):
+        class Result:
+            returncode = 0
+            stderr = ""
+
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return Result()
+
+        with patch.dict(tui.os.environ, {"TMUX": "/tmp/tmux", "ALGE_TUI_AGENT_TARGET": "{down-of}"}):
+            with patch("tui.subprocess.run", side_effect=fake_run):
+                ok, message = tui._send_command_to_agent("/status")
+
+        self.assertTrue(ok)
+        self.assertIn("pasted /status", message)
+        self.assertIn("review and press Enter", message)
+        self.assertEqual(calls[0], ["tmux", "send-keys", "-t", "{down-of}", "-l", "/status"])
+        self.assertEqual(calls[1], ["tmux", "select-pane", "-t", "{down-of}"])
 
     def test_failures_view_operator_cue_mentions_triage(self):
         backlog = {
@@ -316,6 +513,22 @@ class TuiTests(unittest.TestCase):
         cue = tui._operation_hint(backlog, workers, view="failures")
 
         self.assertIn("Triage", cue.plain)
+
+    def test_failures_primary_action_reviews_before_retrying_raw_archive(self):
+        backlog = {
+            "pending_downloads": 0,
+            "pending_extractions": 0,
+            "pending_raw_archives": 0,
+            "failed_downloads": 0,
+        }
+        workers = {"total": 0, "running": 0, "idle": 0, "failed": 0}
+        stats = {"raw_archives_by_status": {"failed": 3}}
+
+        label, command, hint = tui._primary_action("failures", backlog=backlog, workers=workers, stats=stats)
+
+        self.assertEqual(label, "status")
+        self.assertEqual(command, "/status")
+        self.assertIn("failed", hint)
 
     def test_failure_summary_panel_breaks_down_failed_stages(self):
         stats = {

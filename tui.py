@@ -1,7 +1,9 @@
 import contextlib
 from datetime import datetime, timezone
+import os
 import re
 import select
+import subprocess
 import sys
 import termios
 import time
@@ -31,6 +33,16 @@ COMMANDS = [
     ("goal", "/goal", "long"),
     ("help", "/help", "all"),
 ]
+COMMAND_DETAILS = {
+    "/search": "find and queue new public-domain works",
+    "/download": "fetch pending files into the raw bucket",
+    "/process": "extract readable text from downloaded files",
+    "/archive-raw": "ship processed originals to S3-compatible storage",
+    "/cycle": "run one discover-download-process pass",
+    "/auto": "start, stop, or inspect autonomous work",
+    "/goal": "delegate or inspect sustained corpus goals",
+    "/help": "show every slash command and option",
+}
 ACTION_EXAMPLES = {
     "overview": [
         ("status", "/status", "refresh pipeline counts"),
@@ -212,7 +224,7 @@ def _summary_panel(stats, backlog, workers, scans, freshness=None):
     )
 
 
-def _compact_summary_panel(stats, backlog, workers, scans, freshness=None):
+def _compact_summary_panel(stats, backlog, workers, scans, freshness=None, width=None):
     downloads = stats.get("downloads_by_status", {})
     extractions = stats.get("extractions_by_status", {})
     raw_archives = stats.get("raw_archives_by_status", {})
@@ -244,12 +256,13 @@ def _compact_summary_panel(stats, backlog, workers, scans, freshness=None):
     )
     detail = Text()
     detail.append(state_reason, style=state_style)
-    detail.append("  ")
-    detail.append("workers ", style="muted")
-    detail.append(str(workers["running"]), style="tool" if workers["running"] else "muted")
-    detail.append(" run  ", style="muted")
-    detail.append(str(workers["failed"]), style="danger" if workers["failed"] else "success")
-    detail.append(" fail", style="muted")
+    if not (width and width < 60):
+        detail.append("  ")
+        detail.append("workers ", style="muted")
+        detail.append(str(workers["running"]), style="tool" if workers["running"] else "muted")
+        detail.append(" run  ", style="muted")
+        detail.append(str(workers["failed"]), style="danger" if workers["failed"] else "success")
+        detail.append(" fail", style="muted")
     return _panel(Group(table, Align.center(detail)), "Pipeline / Backlog", border_style=state_style)
 
 
@@ -308,40 +321,76 @@ def _percent(done, total):
     return f"{int(round(_ratio(done, total) * 100)):>3}%"
 
 
-def _hero(stats, backlog, workers, scans, freshness=None, view="overview"):
+def _hero(stats, backlog, workers, scans, freshness=None, view="overview", width=None):
     pending_total = _pending_total(backlog)
     failure_total = _failure_total(stats, backlog, workers)
     state, state_style, _reason = _health_state(backlog, workers, scans, stats, freshness=freshness)
     view_label, view_description = _view_detail(view)
+    narrow = bool(width and width <= 60)
     table = Table.grid(expand=True)
-    table.add_column(no_wrap=True)
-    table.add_column(justify="right", ratio=1)
+    table.add_column(ratio=1, no_wrap=True)
     title = Text("ALGE", style="bold highlight")
     metrics = Text()
     tokens = [
         _status_token("state", state, state_style),
         _status_token("queue", pending_total, _count_style(pending_total)),
-        _status_token("run", workers["running"], "tool" if workers["running"] else "muted"),
         _status_token("fail", failure_total, "danger" if failure_total else "success"),
-        _status_token("texts", stats.get("extractions_by_status", {}).get("processed", 0), "success"),
-        _status_token("seen", _freshness_age(freshness), _freshness_style(freshness)),
     ]
+    if not narrow:
+        table.add_column(justify="right", ratio=1)
+        tokens.extend([
+            _status_token("run", workers["running"], "tool" if workers["running"] else "muted"),
+            _status_token("texts", stats.get("extractions_by_status", {}).get("processed", 0), "success"),
+            _status_token("seen", _freshness_age(freshness), _freshness_style(freshness)),
+        ])
     for index, token in enumerate(tokens):
         if index:
-            metrics.append("   ")
+            metrics.append("  " if narrow else "   ")
         metrics.append(token)
-    table.add_row(title, metrics)
+    if narrow:
+        table.add_row(Text.assemble(title, ("  "), metrics))
+    else:
+        table.add_row(title, metrics)
     detail = Text()
     detail.append(view_label, style="label")
-    detail.append("  ")
-    detail.append(view_description, style="muted")
+    if not narrow:
+        detail.append("  ")
+        detail.append(view_description, style="muted")
+    focus = _view_focus_text(view, backlog, workers, scans, stats, freshness=freshness)
+    if focus:
+        detail.append("  " if narrow else "  |  ", style="muted")
+        detail.append(focus)
     return _panel(Group(table, Align.center(detail)), "Command Deck", border_style=state_style)
 
 
-def _top_chrome(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False):
+def _view_focus_text(view, backlog, workers, scans, stats, freshness=None):
+    view = _normalize_view(view)
+    if view == "queue":
+        if backlog["pending_extractions"]:
+            return Text(f"{backlog['pending_extractions']} files need text", style="tool")
+        if backlog["pending_downloads"]:
+            return Text(f"{backlog['pending_downloads']} downloads ready", style="warning")
+        if backlog["pending_raw_archives"]:
+            return Text(f"{backlog['pending_raw_archives']} raw files need s3", style="highlight")
+        return Text("queue is clear", style="success")
+    if view == "failures":
+        total = _failure_total(stats, backlog, workers) + int(scans.get("infected", 0) or 0)
+        return Text(f"{total} issues in triage", style="danger" if total else "success")
+    if view == "activity":
+        if workers["running"]:
+            return Text(f"{workers['running']} workers active", style="tool")
+        return Text(f"last event {_freshness_age(freshness)}", style=_freshness_style(freshness))
+    if view == "controls":
+        _label, command, _hint = _primary_action(view, backlog=backlog, workers=workers, scans=scans, stats=stats)
+        return Text(f"primary {command.split()[0]}", style="highlight")
+    _state, state_style, state_reason = _health_state(backlog, workers, scans, stats, freshness=freshness)
+    return Text(_shorten(state_reason, 42), style=state_style)
+
+
+def _top_chrome(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False, width=None):
     return Group(
-        _hero(stats, backlog, workers, scans, freshness=freshness, view=view),
-        _view_bar(view, interactive=interactive),
+        _hero(stats, backlog, workers, scans, freshness=freshness, view=view, width=width),
+        _view_bar(view, interactive=interactive, width=width),
     )
 
 
@@ -364,8 +413,7 @@ def _recent_activity(limit=6):
     return _panel(table, "Activity")
 
 
-def _activity_summary_panel(limit=24):
-    rows = db.get_recent_agent_statuses(limit=limit)
+def _activity_counts(rows):
     counts = {"done": 0, "run": 0, "wait": 0, "fail": 0, "note": 0}
     for row in rows:
         message = _activity_message(str(row.get("message") or "").strip())
@@ -374,15 +422,45 @@ def _activity_summary_panel(limit=24):
             counts[label] += 1
         else:
             counts["note"] += 1
+    return counts
 
+
+def _activity_decision(counts):
+    if counts["fail"]:
+        return Text(f"{counts['fail']} recent failures need review", style="danger")
+    if counts["run"]:
+        return Text(f"{counts['run']} active starts; watch for done/fail", style="tool")
+    if counts["wait"] and not counts["done"]:
+        return Text("agent is waiting; choose the next command", style="warning")
+    if counts["done"]:
+        return Text(f"{counts['done']} recent completions", style="success")
+    return Text("no clear activity signal yet", style="muted")
+
+
+def _activity_count_style(label, count):
+    if not count:
+        return "muted"
+    return {
+        "done": "success",
+        "run": "tool",
+        "wait": "warning",
+        "fail": "danger",
+        "note": "muted",
+    }.get(label, "tool")
+
+
+def _activity_summary_panel(limit=24):
+    rows = db.get_recent_agent_statuses(limit=limit)
+    counts = _activity_counts(rows)
     table = Table.grid(expand=True, padding=(0, 2))
     for _index in range(len(counts)):
         table.add_column(justify="center")
     table.add_row(*(Text(label, style="muted") for label in counts))
     table.add_row(
-        *(Text(str(counts[label]), style=("danger" if label == "fail" and counts[label] else "success" if counts[label] else "muted")) for label in counts)
+        *(Text(str(counts[label]), style=_activity_count_style(label, counts[label])) for label in counts)
     )
-    return _panel(table, "Activity Summary", border_style="danger" if counts["fail"] else "pond")
+    decision = Align.center(_activity_decision(counts))
+    return _panel(Group(table, decision), "Activity Summary", border_style="danger" if counts["fail"] else "pond")
 
 
 def _activity_time_label(created_at, now=None):
@@ -499,16 +577,14 @@ def _age_from_timestamp(value, now=None):
 
 
 def _command_reference():
-    table = Table.grid(expand=True, padding=(0, 2))
-    for _index in range(4):
-        table.add_column(ratio=1)
-    for row_start in range(0, len(COMMANDS), 4):
-        cells = []
-        for label, command, hint in COMMANDS[row_start: row_start + 4]:
-            cells.append(Text.assemble((label, "muted"), ("  "), (hint, "label"), ("\n"), (command, "highlight")))
-        while len(cells) < 4:
-            cells.append(Text(""))
-        table.add_row(*cells)
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(style="highlight", no_wrap=True)
+    table.add_column(style="label", no_wrap=True)
+    table.add_column(ratio=1)
+    table.add_row(Text("command", style="muted"), Text("role", style="muted"), Text("use", style="muted"))
+    for label, command, hint in COMMANDS:
+        detail = COMMAND_DETAILS.get(command, hint)
+        table.add_row(command, label, Text(detail, style="muted", overflow="fold"))
     return _panel(table, "Controls")
 
 
@@ -526,7 +602,7 @@ def _compact_command_reference():
     return _panel(table, "Command Reference")
 
 
-def _command_examples(view="overview", backlog=None, workers=None, scans=None, stats=None, limit=None):
+def _action_rows(view="overview", backlog=None, workers=None, scans=None, stats=None, limit=None):
     view = _normalize_view(view)
     rows = list(ACTION_EXAMPLES.get(view) or ACTION_EXAMPLES["overview"])
     if view == "queue" and backlog:
@@ -542,16 +618,17 @@ def _command_examples(view="overview", backlog=None, workers=None, scans=None, s
     if view == "failures":
         scans = scans or {}
         workers = workers or {"failed": 0}
-        stats = stats or {}
-        raw_archives = stats.get("raw_archives_by_status", {})
         if scans.get("infected", 0):
             rows.insert(0, ("quarantine", "/status", "review quarantine before more promotion"))
         elif workers.get("failed", 0):
             rows.insert(0, ("workers", "/status", "locate failed background work"))
-        elif raw_archives.get("failed", 0):
-            rows.sort(key=lambda row: 0 if row[1] == "/archive-raw --limit 25" else 1)
     if limit:
         rows = rows[:limit]
+    return rows
+
+
+def _command_examples(view="overview", backlog=None, workers=None, scans=None, stats=None, limit=None):
+    rows = _action_rows(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=limit)
 
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(style="muted", no_wrap=True)
@@ -559,13 +636,43 @@ def _command_examples(view="overview", backlog=None, workers=None, scans=None, s
     table.add_column(ratio=2)
     table.add_column(ratio=1)
     for index, (label, command, hint) in enumerate(rows, start=1):
+        marker = "now" if index == 1 else "next" if index == 2 else "later"
         table.add_row(
-            Text(f"{index}.", style="muted"),
+            Text(marker, style="highlight" if index == 1 else "muted"),
             label,
             Text(command, style="highlight", overflow="ellipsis", no_wrap=True),
             Text(hint, style="muted", overflow="ellipsis", no_wrap=True),
         )
     return _panel(table, "Next Actions", border_style="tool")
+
+
+def _primary_action(view="overview", backlog=None, workers=None, scans=None, stats=None):
+    rows = _action_rows(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=1)
+    return rows[0] if rows else ("status", "/status", "refresh pipeline counts")
+
+
+def _primary_command_line(view, backlog, workers, scans, stats, interactive=False):
+    _label, command, _hint = _primary_action(view, backlog=backlog, workers=workers, scans=scans, stats=stats)
+    prefix = "enter paste " if interactive and os.environ.get("TMUX") else "primary "
+    return Text.assemble(
+        (prefix, "muted"),
+        (_shorten(command, 60), "highlight"),
+    )
+
+
+def _command_tray(view, backlog, workers, scans, stats, interactive=False):
+    label, command, hint = _primary_action(view, backlog=backlog, workers=workers, scans=scans, stats=stats)
+    action = "enter pastes into agent pane" if interactive and os.environ.get("TMUX") else "type in the agent pane"
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(style="muted", no_wrap=True)
+    table.add_column(ratio=1)
+    table.add_row(action, Text(command, style="highlight", overflow="ellipsis", no_wrap=True))
+    table.add_row("why", Text.assemble((label, "label"), (" / "), (hint, "muted")))
+    return _panel(
+        table,
+        "Primary Command",
+        border_style="tool",
+    )
 
 
 def _format_title(row):
@@ -619,9 +726,9 @@ def _queue_preview(download_limit=2, extraction_limit=2, raw_limit=1):
     table.add_column(style="muted", no_wrap=True)
 
     rows = [
-        ("download", pending_downloads, "No pending download candidates."),
-        ("text", pending_extractions, "No downloaded files waiting for text extraction."),
-        ("raw", raw_archives, "Clear."),
+        ("download", pending_downloads, "No downloads queued."),
+        ("text", pending_extractions, "No files need text."),
+        ("raw", raw_archives, "No raw files ready."),
     ]
     for label, queue_rows, empty in rows:
         if not queue_rows:
@@ -647,9 +754,9 @@ def _overview_queue_panel(backlog):
     table.add_column(justify="right", no_wrap=True)
     table.add_column(ratio=2)
     rows = [
-        ("download", backlog["pending_downloads"], db.get_pending_download_files(limit=1), "No pending download candidates."),
-        ("text", backlog["pending_extractions"], db.get_pending_extractions(limit=1, extractor=processor.EXTRACTOR_VERSION), "No downloaded files waiting for text extraction."),
-        ("raw", backlog["pending_raw_archives"], db.get_raw_archive_candidates(limit=1), "Clear."),
+        ("download", backlog["pending_downloads"], db.get_pending_download_files(limit=1), "No downloads queued."),
+        ("text", backlog["pending_extractions"], db.get_pending_extractions(limit=1, extractor=processor.EXTRACTOR_VERSION), "No files need text."),
+        ("raw", backlog["pending_raw_archives"], db.get_raw_archive_candidates(limit=1), "No raw files ready."),
     ]
     for label, count, queue_rows, empty in rows:
         preview = _shorten(_format_title(queue_rows[0]), 46) if queue_rows else empty
@@ -730,20 +837,25 @@ def _view_for_key(key, current_view):
     return VIEW_KEYS.get(key, current_view)
 
 
-def _view_bar(active_view, interactive=False):
+def _view_bar(active_view, interactive=False, width=None):
     active_view = _normalize_view(active_view)
     line = Text()
+    narrow = bool(width and width < 60)
     for index, view in enumerate(VIEWS):
         if index:
-            line.append("  ")
+            line.append(" " if narrow else "  ")
         key = {"overview": "o", "queue": "w", "failures": "f", "activity": "a", "controls": "c"}[view]
         label = {"overview": "overview", "queue": "queue", "failures": "fail", "activity": "activity", "controls": "controls"}[view]
         style = "reverse highlight" if view == active_view else "muted"
-        line.append(f" {key} {label} ", style=style)
+        line.append(f" {key} " if narrow else f" {key} {label} ", style=style)
     if interactive:
-        keys = Text("tab/n next   p/h prev   q quit", style="muted")
+        if narrow:
+            hint = "enter paste   tab/n   p/h   q" if os.environ.get("TMUX") else "tab/n   p/h   q"
+        else:
+            hint = "enter paste   tab/n next   p/h prev   q quit" if os.environ.get("TMUX") else "tab/n next   p/h prev   q quit"
+        keys = Text(hint, style="muted")
         return Group(Align.center(line), Align.center(keys))
-    line.append("   use --view", style="muted")
+    line.append("  --view" if narrow else "   use --view", style="muted")
     return Align.center(line)
 
 
@@ -814,31 +926,48 @@ def _collect_state():
     return stats, backlog, workers, scans, freshness
 
 
-def _footer(backlog, workers, scans, stats, state_style, view="overview", interactive=False, compact=False):
+def _notice_line(notice):
+    if not notice:
+        return None
+    style = "success"
+    message = notice
+    if isinstance(notice, tuple):
+        style, message = notice
+    style = style if style in {"success", "warning", "danger", "tool", "highlight", "muted"} else "success"
+    return Align.center(Text(str(message), style=style))
+
+
+def _footer(backlog, workers, scans, stats, state_style, view="overview", interactive=False, compact=False, notice=None):
     cue = _operation_hint(backlog, workers, scans, stats, view=view)
     if compact:
-        return _panel(Align.center(cue), "Operator Cue", border_style=state_style)
+        lines = [Align.center(_primary_command_line(view, backlog, workers, scans, stats, interactive=interactive)), Align.center(cue)]
+        if notice:
+            lines.insert(0, _notice_line(notice))
+        return _panel(Group(*lines), "Operator Cue", border_style=state_style)
     parts = [
         Align.center(_compact_goal()),
+        _command_tray(view, backlog, workers, scans, stats, interactive=interactive),
         _panel(Align.center(cue), "Operator Cue", border_style=state_style),
     ]
+    if notice:
+        parts.insert(1, _notice_line(notice))
     parts.append(Align.center(Text("tmux persistent  close terminal anytime  run alge to reconnect", style="muted")))
     return Group(
         *parts
     )
 
 
-def _render_full(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False):
+def _render_full(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False, notice=None, width=None):
     view = _normalize_view(view)
     state, state_style, _reason = _health_state(backlog, workers, scans, stats, freshness=freshness)
-    top = _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive)
+    top = _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, width=width)
     if view == "queue":
         return Group(
             top,
             _summary_panel(stats, backlog, workers, scans, freshness=freshness),
             _queue_preview(download_limit=8, extraction_limit=6, raw_limit=4),
             _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, notice=notice),
         )
     if view == "failures":
         return Group(
@@ -847,7 +976,7 @@ def _render_full(stats, backlog, workers, scans, freshness=None, view="overview"
             _failure_summary_panel(stats, backlog, workers, scans),
             _triage_panel(limit=8) or _panel(Text("No recent pipeline failures.", style="success"), "Triage", border_style="success"),
             _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, notice=notice),
         )
     if view == "activity":
         return Group(
@@ -855,14 +984,14 @@ def _render_full(stats, backlog, workers, scans, freshness=None, view="overview"
             _activity_summary_panel(limit=24),
             _recent_activity(limit=12),
             _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, notice=notice),
         )
     if view == "controls":
         return Group(
             top,
             _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats),
             _command_reference(),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, notice=notice),
         )
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(ratio=1)
@@ -875,63 +1004,67 @@ def _render_full(stats, backlog, workers, scans, freshness=None, view="overview"
         grid,
         _recent_activity(limit=4) if triage else Group(),
         _command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=3),
-        _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive),
+        _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, notice=notice),
     )
 
 
-def _render_compact(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False, height=None):
+def _render_compact(stats, backlog, workers, scans, freshness=None, view="overview", interactive=False, height=None, notice=None, width=None):
     view = _normalize_view(view)
     state, state_style, _reason = _health_state(backlog, workers, scans, stats, freshness=freshness)
     tight = bool(height and height <= 20)
     if view == "queue":
         parts = [
-            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
+            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, width=width),
             _queue_preview(download_limit=5, extraction_limit=4, raw_limit=2),
         ]
         if not tight:
             parts.append(_command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=2))
-        parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True))
+        parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True, notice=notice))
         return Group(*parts)
     if view == "failures":
         parts = [
-            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
+            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, width=width),
             _triage_panel(limit=5) or _panel(Text("No recent pipeline failures.", style="success"), "Triage", border_style="success"),
         ]
         if not tight:
             parts.append(_command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=2))
-        parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True))
+        parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True, notice=notice))
         return Group(*parts)
     if view == "activity":
         return Group(
-            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
+            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, width=width),
             _recent_activity(limit=7),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True, notice=notice),
         )
     if view == "controls":
         parts = [
-            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
+            _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, width=width),
         ]
         if not tight:
             parts.append(_command_examples(view, backlog=backlog, workers=workers, scans=scans, stats=stats, limit=3))
         parts.extend([
             _compact_command_reference(),
-            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True),
+            _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True, notice=notice),
         ])
         return Group(*parts)
-    return Group(
-        _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive),
-        _compact_summary_panel(stats, backlog, workers, scans, freshness=freshness),
-        _attention_panel(backlog, compact=True),
-        _footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True),
-    )
+    parts = [
+        _top_chrome(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, width=width),
+        _compact_summary_panel(stats, backlog, workers, scans, freshness=freshness, width=width),
+    ]
+    has_attention = _pending_total(backlog) or _failure_total(stats, backlog, workers) or scans.get("infected", 0)
+    if has_attention or not tight:
+        parts.append(_attention_panel(backlog, compact=True))
+    parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True, notice=notice))
+    return Group(*parts)
 
 
-def render_tui(logo_lines, height=None, view="overview", interactive=False):
+def render_tui(logo_lines, height=None, view="overview", interactive=False, notice=None, width=None):
     stats, backlog, workers, scans, freshness = _collect_state()
     height = terminal_theme.console.height if height is None else height
+    width = terminal_theme.console.width if width is None else width
     if height and height < COMPACT_HEIGHT:
-        return _render_compact(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, height=height)
-    return _render_full(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive)
+        return _render_compact(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, height=height, notice=notice, width=width)
+    return _render_full(stats, backlog, workers, scans, freshness=freshness, view=view, interactive=interactive, notice=notice, width=width)
 
 
 @contextlib.contextmanager
@@ -957,12 +1090,52 @@ def _read_key():
     return sys.stdin.read(1)
 
 
+def _tmux_agent_target():
+    if not os.environ.get("TMUX"):
+        return ""
+    return os.environ.get("ALGE_TUI_AGENT_TARGET") or "{down-of}"
+
+
+def _send_command_to_agent(command):
+    target = _tmux_agent_target()
+    if not target:
+        return False, "not running inside tmux"
+    command = str(command or "").strip()
+    if not command:
+        return False, "no command selected"
+    send = subprocess.run(
+        ["tmux", "send-keys", "-t", target, "-l", command],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if send.returncode:
+        message = send.stderr.strip() or "tmux send-keys failed"
+        return False, message
+    subprocess.run(
+        ["tmux", "select-pane", "-t", target],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return True, f"pasted {command}; review and press Enter"
+
+
+def _send_primary_action(view):
+    stats, backlog, workers, scans, _freshness_value = _collect_state()
+    _label, command, _hint = _primary_action(view, backlog=backlog, workers=workers, scans=scans, stats=stats)
+    return _send_command_to_agent(command)
+
+
 def run_tui(logo_lines, watch=False, interval=2.0, view="overview"):
     view = _normalize_view(view)
     if not watch:
         terminal_theme.console.print(render_tui(logo_lines, view=view))
         return
 
+    notice = None
+    notice_until = 0
     with _raw_input(enabled=True) as interactive:
         with Live(
             render_tui(logo_lines, view=view, interactive=interactive),
@@ -971,11 +1144,18 @@ def run_tui(logo_lines, watch=False, interval=2.0, view="overview"):
             screen=True,
         ) as live:
             while True:
+                if notice and time.monotonic() >= notice_until:
+                    notice = None
                 key = _read_key() if interactive else None
                 if key:
                     lowered = key.lower()
                     if lowered == "q":
                         break
-                    view = _view_for_key(lowered, view)
-                live.update(render_tui(logo_lines, view=view, interactive=interactive))
+                    if lowered in {"\r", "\n"}:
+                        ok, message = _send_primary_action(view)
+                        notice = ("success", message) if ok else ("danger", f"tmux: {message}")
+                        notice_until = time.monotonic() + 4
+                    else:
+                        view = _view_for_key(lowered, view)
+                live.update(render_tui(logo_lines, view=view, interactive=interactive, notice=notice))
                 time.sleep(interval)
