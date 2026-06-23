@@ -124,6 +124,10 @@ def _extract_epub(path):
 def extract_plaintext(path, content_type=None, format_hint=None):
     suffix = path.suffix.lower()
     hint = f"{content_type or ''} {format_hint or ''}".lower()
+    if "encrypted" in hint or suffix == ".lcpdf":
+        raise UnsupportedFormat("encrypted archive formats are not plaintext-extractable")
+    if suffix in (".torrent", ".aria2", ".part", ".resume"):
+        raise UnsupportedFormat("torrent control files are not plaintext-extractable payloads")
     raw = path.read_bytes()
 
     if suffix == ".gz" or raw.startswith(b"\x1f\x8b"):
@@ -330,6 +334,9 @@ def process_rows(rows, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_V
                     terminal_theme.print_pip("pending", f"archive raw after extraction {download_id}")
                     archive = archive_raw_after_extraction(row, delete_local=True)
                     terminal_theme.print_pip("success", f"archived raw object to {archive['uri']} and removed local copy")
+                except FileNotFoundError as archive_exc:
+                    db.mark_raw_archive_missing(download_id, archive_exc)
+                    terminal_theme.print_pip("skipped", f"local raw missing: {archive_exc}")
                 except Exception as archive_exc:
                     db.mark_raw_archive_failed(download_id, archive_exc)
                     terminal_theme.print_pip("failed", f"raw archive failed: {archive_exc}")
@@ -339,6 +346,10 @@ def process_rows(rows, bucket_dir=DEFAULT_TEXT_BUCKET_DIR, extractor=EXTRACTOR_V
             db.mark_extraction_skipped(download_id, extractor, exc)
             results["skipped"] += 1
             terminal_theme.print_pip("skipped", f"skipped: {exc}")
+        except FileNotFoundError as exc:
+            db.mark_extraction_skipped(download_id, extractor, exc)
+            results["skipped"] += 1
+            terminal_theme.print_pip("skipped", f"local raw missing: {exc}")
         except Exception as exc:
             db.mark_extraction_failed(download_id, extractor, exc)
             results["failed"] += 1
@@ -357,7 +368,7 @@ def archive_processed_raws(limit=10, delete_local=True):
             results["archived"] += 1
             terminal_theme.print_pip("success", f"archived to {archive['uri']}")
         except FileNotFoundError as exc:
-            db.mark_raw_archive_failed(row["id"], exc)
+            db.mark_raw_archive_missing(row["id"], exc)
             results["skipped"] += 1
             terminal_theme.print_pip("skipped", f"local raw missing: {exc}")
         except Exception as exc:

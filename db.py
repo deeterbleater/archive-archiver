@@ -1055,7 +1055,11 @@ def get_recent_pipeline_failures(limit=5):
     failures.extend(dict(row) for row in cursor.fetchall())
 
     conn.close()
+    stage_priority = {"text": 0, "raw": 0, "download": 1}
     failures.sort(key=lambda row: (str(row.get("updated_at") or ""), int(row.get("id") or 0)), reverse=True)
+    failures.sort(
+        key=lambda row: stage_priority.get(str(row.get("stage") or ""), 2),
+    )
     return failures[:limit]
 
 
@@ -1876,6 +1880,22 @@ def mark_raw_archive_failed(download_id, error):
     SET
         raw_archive_status = 'failed',
         raw_archive_error = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+    """, (str(error)[:1000], download_id))
+    conn.commit()
+    conn.close()
+
+
+def mark_raw_archive_missing(download_id, error):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    UPDATE downloads
+    SET
+        raw_archive_status = 'missing',
+        raw_archive_error = ?,
+        local_raw_deleted_at = CURRENT_TIMESTAMP,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
     """, (str(error)[:1000], download_id))

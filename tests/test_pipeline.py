@@ -476,6 +476,48 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(db.get_backlog_counts("plaintext.v2")["pending_extractions"], 0)
         self.assertEqual(db.get_stats()["extractions_by_status"], {"failed": 1})
 
+    def test_encrypted_archive_formats_are_skipped_not_failed(self):
+        raw_path = Path(self.tempdir.name) / "encrypted.lcpdf"
+        raw_path.write_bytes(b"%PDF encrypted fixture")
+        work_id = db.add_work(title="Encrypted Fixture", author="Test Author", search_query="encrypted")
+        db.add_file(
+            work_id=work_id,
+            site="archive.org",
+            format="LCP Encrypted PDF",
+            url="https://archive.org/details/encrypted",
+            download_source="fixture",
+            download_url="https://archive.org/download/encrypted/encrypted.lcpdf",
+        )
+        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        db.mark_download_started(file_id)
+        db.mark_download_succeeded(
+            file_id=file_id,
+            bucket_uri=raw_path.resolve().as_uri(),
+            storage_key="encrypted.lcpdf",
+            sha256="encrypted-sha",
+            byte_count=raw_path.stat().st_size,
+            content_type="application/pdf",
+            http_status=200,
+            final_url="https://archive.org/download/encrypted/encrypted.lcpdf",
+        )
+
+        results = processor.process_pending(limit=1, extractor="plaintext.v2")
+
+        self.assertEqual(results, {"processed": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(db.get_stats()["extractions_by_status"], {"skipped": 1})
+
+    def test_missing_local_raw_archive_is_retired_not_failed(self):
+        self._add_processed_text("Missing Raw", "Readable fixture used for missing raw archival.")
+        row = db.get_raw_archive_candidates(limit=1)[0]
+        raw_path = Path(row["bucket_uri"].replace("file://", ""))
+        raw_path.unlink()
+
+        results = processor.archive_processed_raws(limit=1)
+
+        self.assertEqual(results, {"archived": 0, "failed": 0, "skipped": 1})
+        self.assertEqual(db.get_stats()["raw_archives_by_status"], {"missing": 1})
+        self.assertEqual(db.get_raw_archive_candidates(limit=1), [])
+
     def test_dynamic_category_is_created_when_defaults_do_not_match(self):
         row = {
             "title": "Thelema Ritual Notes",

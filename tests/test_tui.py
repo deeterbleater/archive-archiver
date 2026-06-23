@@ -331,7 +331,7 @@ class TuiTests(unittest.TestCase):
 
         focus = tui._view_focus_text("failures", backlog, workers, scans, stats)
 
-        self.assertEqual(focus.plain, "5 issues in triage")
+        self.assertEqual(focus.plain, "4 issues in triage")
 
     def test_controls_header_focus_shows_primary_command(self):
         with terminal_theme.console.capture() as capture:
@@ -348,7 +348,9 @@ class TuiTests(unittest.TestCase):
         }
         workers = {"total": 0, "running": 0, "idle": 0, "failed": 0}
 
-        cue = tui._operation_hint(backlog, workers)
+        stats = {"extractions_by_status": {"failed": 1}}
+
+        cue = tui._operation_hint(backlog, workers, stats=stats)
 
         self.assertIn("pipeline failures", cue.plain)
 
@@ -427,6 +429,21 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(label, "process")
         self.assertEqual(command, "/process --limit 25")
         self.assertIn("extract", hint)
+
+    def test_overview_primary_action_matches_ready_queue_command(self):
+        backlog = {
+            "pending_downloads": 4,
+            "pending_extractions": 0,
+            "pending_raw_archives": 0,
+            "failed_downloads": 9,
+        }
+        workers = {"total": 0, "running": 0, "idle": 0, "failed": 0}
+
+        label, command, hint = tui._primary_action("overview", backlog=backlog, workers=workers)
+
+        self.assertEqual(label, "download")
+        self.assertEqual(command, "/download --limit 25 --domain-workers")
+        self.assertIn("fetch", hint)
 
     def test_full_tui_shows_primary_command_tray(self):
         with terminal_theme.console.capture() as capture:
@@ -512,7 +529,7 @@ class TuiTests(unittest.TestCase):
 
         cue = tui._operation_hint(backlog, workers, view="failures")
 
-        self.assertIn("Triage", cue.plain)
+        self.assertIn("Blocked downloads", cue.plain)
 
     def test_failures_primary_action_reviews_before_retrying_raw_archive(self):
         backlog = {
@@ -548,8 +565,8 @@ class TuiTests(unittest.TestCase):
             terminal_theme.console.print(tui._failure_summary_panel(stats, backlog, workers, scans))
 
         output = capture.get()
-        self.assertIn("Failure Summary", output)
-        self.assertIn("downloads", output)
+        self.assertIn("Triage Summary", output)
+        self.assertIn("blocked dl", output)
         self.assertIn("text", output)
         self.assertIn("raw", output)
         self.assertIn("quarantine", output)
@@ -558,7 +575,7 @@ class TuiTests(unittest.TestCase):
         with terminal_theme.console.capture() as capture:
             terminal_theme.console.print(tui.render_tui(["ALGE"], height=40, view="failures"))
 
-        self.assertIn("Failure Summary", capture.get())
+        self.assertIn("Triage Summary", capture.get())
 
     def test_controls_operator_cue_is_short_and_direct(self):
         backlog = {
@@ -732,6 +749,15 @@ class TuiTests(unittest.TestCase):
 
         self.assertEqual(panel, "triage")
         triage.assert_called_once_with(limit=6)
+
+    def test_attention_panel_can_suppress_blocked_download_triage(self):
+        with patch.object(tui, "_triage_panel", return_value="triage") as triage:
+            with patch.object(tui, "_queue_preview", return_value="queue") as queue:
+                panel = tui._attention_panel({}, compact=True, show_triage=False)
+
+        self.assertEqual(panel, "queue")
+        triage.assert_not_called()
+        queue.assert_called_once()
 
 
 if __name__ == "__main__":

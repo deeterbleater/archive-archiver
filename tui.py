@@ -113,11 +113,14 @@ def _failure_total(stats, backlog, workers):
     extractions = stats.get("extractions_by_status", {})
     raw_archives = stats.get("raw_archives_by_status", {})
     return (
-        backlog["failed_downloads"]
-        + int(extractions.get("failed", 0) or 0)
+        int(extractions.get("failed", 0) or 0)
         + int(raw_archives.get("failed", 0) or 0)
         + workers["failed"]
     )
+
+
+def _source_block_total(backlog):
+    return int(backlog.get("failed_downloads", 0) or 0)
 
 
 def _health_state(backlog, workers, scans, stats=None, freshness=None):
@@ -128,7 +131,7 @@ def _health_state(backlog, workers, scans, stats=None, freshness=None):
         return "quarantine", "danger", "infected files require review"
     if workers["failed"]:
         return "worker issue", "danger", "a background worker failed"
-    if backlog["failed_downloads"] or extractions.get("failed", 0) or raw_archives.get("failed", 0):
+    if _failure_total(stats, backlog, workers):
         return "attention", "danger", "pipeline failures need triage"
     if workers["running"]:
         return "running", "tool", "background work is active"
@@ -256,6 +259,10 @@ def _compact_summary_panel(stats, backlog, workers, scans, freshness=None, width
     )
     detail = Text()
     detail.append(state_reason, style=state_style)
+    if _source_block_total(backlog):
+        detail.append("  ")
+        detail.append("blocked downloads ", style="muted")
+        detail.append(str(_source_block_total(backlog)), style="warning")
     if not (width and width < 60):
         detail.append("  ")
         detail.append("workers ", style="muted")
@@ -270,11 +277,11 @@ def _failure_summary_panel(stats, backlog, workers, scans):
     extractions = stats.get("extractions_by_status", {})
     raw_archives = stats.get("raw_archives_by_status", {})
     failures = [
-        ("downloads", backlog["failed_downloads"]),
         ("text", int(extractions.get("failed", 0) or 0)),
         ("raw", int(raw_archives.get("failed", 0) or 0)),
         ("workers", workers["failed"]),
         ("quarantine", scans.get("infected", 0)),
+        ("blocked dl", _source_block_total(backlog)),
     ]
     total = _failure_total(stats, backlog, workers) + int(scans.get("infected", 0) or 0)
     table = Table.grid(expand=True, padding=(0, 1))
@@ -288,7 +295,7 @@ def _failure_summary_panel(stats, backlog, workers, scans):
         Text(str(total), style="danger" if total else "success"),
         *(Text(str(value), style="danger" if value else "success") for _label, value in failures),
     )
-    return _panel(table, "Failure Summary", border_style="danger" if total else "success")
+    return _panel(table, "Triage Summary", border_style="danger" if total else "success")
 
 
 def _status_token(label, value, style):
@@ -605,16 +612,20 @@ def _compact_command_reference():
 def _action_rows(view="overview", backlog=None, workers=None, scans=None, stats=None, limit=None):
     view = _normalize_view(view)
     rows = list(ACTION_EXAMPLES.get(view) or ACTION_EXAMPLES["overview"])
-    if view == "queue" and backlog:
+    if view in {"overview", "queue"} and backlog:
         priority = None
+        priority_row = None
         if backlog["pending_extractions"]:
             priority = "/process --limit 25"
+            priority_row = ("process", priority, "extract downloaded raw files")
         elif backlog["pending_downloads"]:
             priority = "/download --limit 25 --domain-workers"
+            priority_row = ("download", priority, "fetch pending files")
         elif backlog["pending_raw_archives"]:
             priority = "/archive-raw --limit 25"
+            priority_row = ("archive", priority, "ship processed originals")
         if priority:
-            rows.sort(key=lambda row: 0 if row[1] == priority else 1)
+            rows = [priority_row] + [row for row in rows if row[1] != priority]
     if view == "failures":
         scans = scans or {}
         workers = workers or {"failed": 0}
@@ -792,8 +803,8 @@ def _triage_panel(limit=6):
     return _panel(table, "Triage", border_style="danger")
 
 
-def _attention_panel(backlog, compact=False):
-    triage = _triage_panel(limit=1 if compact else 6)
+def _attention_panel(backlog, compact=False, show_triage=True):
+    triage = _triage_panel(limit=1 if compact else 6) if show_triage else None
     if triage:
         return triage
     return _queue_preview()
@@ -891,8 +902,10 @@ def _operation_hint(backlog, workers, scans=None, stats=None, view="overview"):
             return Text("Inspect quarantine before promotion.", style="danger")
         if workers["failed"]:
             return Text("Run /status, then restart failed work.", style="danger")
-        if backlog["failed_downloads"] or extractions.get("failed", 0) or raw_archives.get("failed", 0):
+        if _failure_total(stats, backlog, workers):
             return Text("Review Triage, then retry or exclude.", style="danger")
+        if _source_block_total(backlog):
+            return Text("Blocked downloads are source/access misses; continue queue or search replacements.", style="warning")
         return Text("No recent pipeline failures in triage.", style="success")
     if view == "activity":
         if workers["running"]:
@@ -904,7 +917,7 @@ def _operation_hint(backlog, workers, scans=None, stats=None, view="overview"):
         return Text("Next: review quarantine.", style="danger")
     if workers["failed"]:
         return Text("Next: inspect /status, then restart failed work.", style="danger")
-    if backlog["failed_downloads"] or extractions.get("failed", 0) or raw_archives.get("failed", 0):
+    if _failure_total(stats, backlog, workers):
         return Text("Next: review pipeline failures before queue growth.", style="danger")
     if workers["running"]:
         return Text("Workers active. Watch activity for stalls.", style="tool")
@@ -996,7 +1009,7 @@ def _render_full(stats, backlog, workers, scans, freshness=None, view="overview"
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(ratio=1)
     grid.add_column(ratio=1)
-    triage = _triage_panel() if backlog["failed_downloads"] else None
+    triage = _triage_panel() if _failure_total(stats, backlog, workers) else None
     grid.add_row(_overview_queue_panel(backlog), triage or _recent_activity(limit=3))
     return Group(
         top,
@@ -1053,7 +1066,7 @@ def _render_compact(stats, backlog, workers, scans, freshness=None, view="overvi
     ]
     has_attention = _pending_total(backlog) or _failure_total(stats, backlog, workers) or scans.get("infected", 0)
     if has_attention or not tight:
-        parts.append(_attention_panel(backlog, compact=True))
+        parts.append(_attention_panel(backlog, compact=True, show_triage=bool(_failure_total(stats, backlog, workers))))
     parts.append(_footer(backlog, workers, scans, stats, state_style, view=view, interactive=interactive, compact=True, notice=notice))
     return Group(*parts)
 

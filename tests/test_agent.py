@@ -81,6 +81,45 @@ class AgentHarnessTests(unittest.TestCase):
             any(row["kind"] == "user" and row["content"] == "remember this preference" for row in rows)
         )
 
+    def test_find_articles_uses_direct_archive_workflow(self):
+        result_payload = {
+            "ok": True,
+            "reason": "complete",
+            "query": "articles about CUDA",
+            "cycles": 1,
+            "history": [{"download": {"downloaded": 2, "failed": 0}, "process": {"processed": 2}}],
+            "backlog": {},
+        }
+
+        with mock.patch.object(self.shell.tools, "run_backlog_until_done", return_value=result_payload) as run:
+            with mock.patch("llm.chat_completion", side_effect=AssertionError("model should not handle direct archive work")):
+                result, output = self._run("find articles about CUDA")
+
+        self.assertIsNone(result)
+        self.assertIn("articles about CUDA", output)
+        self.assertIn("2 downloaded", output)
+        run.assert_called_once()
+        self.assertEqual(run.call_args.kwargs["query"], "articles about CUDA")
+        self.assertEqual(run.call_args.kwargs["max_cycles"], 3)
+
+    def test_find_libgen_request_limits_source(self):
+        result_payload = {
+            "ok": False,
+            "reason": "no_results",
+            "query": "Philip K Dick novels",
+            "cycles": 0,
+            "history": [],
+            "backlog": {},
+        }
+
+        with mock.patch.object(self.shell.tools, "run_backlog_until_done", return_value=result_payload) as run:
+            result, output = self._run("find me libgen Philip K Dick novels")
+
+        self.assertIsNone(result)
+        self.assertIn("No archive results", output)
+        self.assertEqual(run.call_args.kwargs["sources"], ["libgen"])
+        self.assertEqual(run.call_args.kwargs["query"], "Philip K Dick novels")
+
     def test_model_command_sets_exact_model(self):
         result, output = self._run("/model minimax/minimax-m3")
 

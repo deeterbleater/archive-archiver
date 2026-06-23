@@ -2,6 +2,7 @@ import argparse
 import cmd
 import json
 import os
+import re
 import select
 import shlex
 import subprocess
@@ -61,6 +62,12 @@ SLASH_COMMANDS = {
 MEMORY_COMMANDS = {"memory", "remember", "compact", "context", "help", "slash", "config", "model", "goal"}
 CHAT_KINDS = {"summary", "note", "user", "assistant"}
 MODEL_PAGE_SIZE = 20
+APP_WORK_RE = re.compile(
+    r"^(?:please\s+)?(?:find|search(?:\s+for)?|collect|get|archive)\s+"
+    r"(?:(?:me|some|many|as\s+many\s+as\s+you\s+can)\s+)?"
+    r"(?P<query>.+?)\s*[.!?]*$",
+    re.IGNORECASE,
+)
 
 
 SYSTEM_PROMPT = """
@@ -281,6 +288,8 @@ class ArchiveAgentShell(cmd.Cmd):
     def _chat(self, line):
         if not line:
             return
+        if self._handle_direct_app_work(line):
+            return
         messages = self._chat_messages(line)
         self.memory.append("user", line, {"model": self._active_model()})
         try:
@@ -298,6 +307,51 @@ class ArchiveAgentShell(cmd.Cmd):
             terminal_theme.print_markup(response)
             self.memory.append("assistant", response, {"model": self._active_model()})
         self._auto_compact()
+
+    def _handle_direct_app_work(self, line):
+        match = APP_WORK_RE.match(line.strip())
+        if not match:
+            return False
+        query = re.sub(r"\s+", " ", match.group("query")).strip(" ,")
+        if not query:
+            return False
+        lowered = query.lower()
+        sources = None
+        if "libgen" in lowered:
+            sources = ["libgen"]
+            query = re.sub(r"\blibgen\b", "", query, flags=re.IGNORECASE).strip(" ,")
+        elif "arxiv" in lowered:
+            sources = ["arxiv"]
+            query = re.sub(r"\barxiv\b", "", query, flags=re.IGNORECASE).strip(" ,")
+        result = self.tools.run_backlog_until_done(
+            query=query,
+            sources=sources,
+            max_results=max(self.config["max_results"], 6),
+            download_limit=max(self.config["download_limit"], 25),
+            process_limit=max(self.config["process_limit"], 25),
+            max_cycles=3,
+        )
+        summary = self._direct_app_work_summary(result)
+        terminal_theme.print_markup(summary)
+        self.memory.append("user", line, {"model": self._active_model(), "direct_app_work": True})
+        self.memory.append("assistant", summary, {"model": self._active_model(), "direct_app_work": True})
+        self._auto_compact()
+        return True
+
+    def _direct_app_work_summary(self, result):
+        history = result.get("history") or []
+        downloaded = sum((step.get("download") or {}).get("downloaded", 0) for step in history)
+        processed = sum((step.get("process") or {}).get("processed", 0) for step in history)
+        failed = sum((step.get("download") or {}).get("failed", 0) for step in history)
+        query = result.get("query") or "requested work"
+        reason = result.get("reason")
+        if reason == "no_results":
+            return f"No archive results were added for [highlight]{query}[/highlight]. Try a narrower title, author, or source."
+        return (
+            f"Ran focused archive workflow for [highlight]{query}[/highlight]: "
+            f"{downloaded} downloaded, {processed} processed, {failed} failed "
+            f"over {result.get('cycles', 0)} cycle(s). Reason: {reason}."
+        )
 
     def _run_llm_tool_loop(
         self,
