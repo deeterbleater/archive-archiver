@@ -242,10 +242,13 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_backlog_until_done",
-            "description": "Continuously download pending works, process downloaded files, and optionally archive raw originals until no actionable backlog remains or progress stalls.",
+            "description": "Continuously search, download, and process a requested topic when query is provided; otherwise drain the global pending backlog until no actionable backlog remains or progress stalls.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "query": {"type": "string", "description": "Topic or work request to search first, then download/process only matching discovered works."},
+                    "sources": {"type": "array", "items": {"type": "string"}},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 25},
                     "download_limit": {"type": "integer", "minimum": 1, "maximum": 1000},
                     "process_limit": {"type": "integer", "minimum": 1, "maximum": 1000},
                     "archive_raw": {"type": "boolean"},
@@ -778,6 +781,9 @@ class AppToolRunner:
 
     def run_backlog_until_done(
         self,
+        query=None,
+        sources=None,
+        max_results=None,
         download_limit=None,
         process_limit=None,
         archive_raw=True,
@@ -787,10 +793,36 @@ class AppToolRunner:
         process_limit = process_limit or self.shell.config["process_limit"]
         history = []
         reason = "complete"
+        query = str(query or "").strip()
+        target_work_ids = []
+        search_output = ""
+        if query:
+            archive_raw = False
+            selected_sources = self._normalize_sources(sources)
+            self._log_tool_status(f"Searching archive sources for '{query}'.", phase="start")
+            search_output = self.search_sync(
+                query,
+                max_results=max_results or self.shell.config["max_results"],
+                sources=selected_sources,
+            ).get("output", "")
+            target_work_ids = db.get_work_ids_for_search_queries([query])
+
+        def target_backlog():
+            if not query:
+                return db.get_backlog_counts(processor.EXTRACTOR_VERSION)
+            return {
+                "pending_downloads": len(db.get_pending_download_files_for_work_ids(target_work_ids, limit=max(download_limit, 1000))),
+                "pending_extractions": len(db.get_pending_extractions_for_work_ids(target_work_ids, limit=max(process_limit, 1000), extractor=processor.EXTRACTOR_VERSION)),
+                "pending_raw_archives": 0,
+                "failed_downloads": db.get_backlog_counts(processor.EXTRACTOR_VERSION)["failed_downloads"],
+            }
 
         for cycle in range(1, max_cycles + 1):
-            before = db.get_backlog_counts(processor.EXTRACTOR_VERSION)
+            before = target_backlog()
             print(f"[agent] backlog cycle {cycle}: {before}")
+            if query and not target_work_ids:
+                reason = "no_results"
+                break
             if (
                 before["pending_downloads"] == 0
                 and before["pending_extractions"] == 0
@@ -801,13 +833,34 @@ class AppToolRunner:
 
             step = {"cycle": cycle, "before": before}
             if before["pending_downloads"] > 0:
-                step["download"] = self.download(limit=download_limit)["results"]
+                if query:
+                    max_bytes = self.shell.config["max_mb"] * 1024 * 1024 if self.shell.config["max_mb"] else None
+                    step["download"] = downloader.download_work_ids_by_domain(
+                        target_work_ids,
+                        limit=download_limit,
+                        bucket_dir=downloader.DEFAULT_RAW_BUCKET_DIR,
+                        requests_per_second=self.shell.config["rps"],
+                        max_bytes=max_bytes,
+                        max_domains=self.shell.config["max_domains"],
+                        per_domain_limit=self.shell.config["per_domain_limit"],
+                        quarantine_dir=downloader.DEFAULT_QUARANTINE_BUCKET_DIR,
+                    )
+                else:
+                    step["download"] = self.download(limit=download_limit)["results"]
             if before["pending_extractions"] > 0:
-                step["process"] = self.process(limit=process_limit)["results"]
+                if query:
+                    step["process"] = processor.process_pending_for_work_ids(
+                        target_work_ids,
+                        limit=process_limit,
+                        bucket_dir=processor.DEFAULT_TEXT_BUCKET_DIR,
+                        extractor=processor.EXTRACTOR_VERSION,
+                    )
+                else:
+                    step["process"] = self.process(limit=process_limit)["results"]
             if archive_raw and before["pending_raw_archives"] > 0:
                 step["archive_raw"] = self.archive_raw(limit=process_limit)["results"]
 
-            after = db.get_backlog_counts(processor.EXTRACTOR_VERSION)
+            after = target_backlog()
             step["after"] = after
             history.append(step)
 
@@ -820,6 +873,9 @@ class AppToolRunner:
         return {
             "ok": reason == "complete",
             "reason": reason,
+            "query": query or None,
+            "target_work_ids": target_work_ids,
+            "search_output": search_output[-4000:] if search_output else "",
             "cycles": len(history),
             "history": history,
             "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION),

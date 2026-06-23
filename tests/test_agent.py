@@ -177,6 +177,42 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(result["backlog"]["pending_downloads"], 0)
         self.assertEqual(result["backlog"]["pending_extractions"], 0)
 
+    def test_backlog_tool_with_query_targets_discovered_work_ids(self):
+        runner = agent_tools.AppToolRunner(self.shell)
+
+        with mock.patch.object(runner, "search_sync", return_value={"ok": True, "output": "found"}) as search:
+            with mock.patch("agent_tools.db.get_work_ids_for_search_queries", return_value=[42]) as work_ids:
+                with mock.patch("agent_tools.db.get_pending_download_files_for_work_ids", side_effect=[[{"id": 7}], [], []]) as pending_downloads:
+                    with mock.patch("agent_tools.db.get_pending_extractions_for_work_ids", return_value=[]) as pending_extractions:
+                        with mock.patch("agent_tools.downloader.download_work_ids_by_domain", return_value={"downloaded": 1, "failed": 0, "skipped": 0}) as download:
+                            with mock.patch.object(runner, "download") as global_download:
+                                result = runner.run_backlog_until_done(
+                                    query="philip k dick novels",
+                                    sources=["libgen"],
+                                    max_results=6,
+                                    max_cycles=2,
+                                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["query"], "philip k dick novels")
+        search.assert_called_once_with("philip k dick novels", max_results=6, sources=["libgen"])
+        work_ids.assert_called_once_with(["philip k dick novels"])
+        self.assertGreaterEqual(pending_downloads.call_count, 2)
+        pending_extractions.assert_called()
+        download.assert_called_once()
+        self.assertEqual(download.call_args.args[0], [42])
+        global_download.assert_not_called()
+
+    def test_backlog_tool_query_reports_no_results(self):
+        runner = agent_tools.AppToolRunner(self.shell)
+
+        with mock.patch.object(runner, "search_sync", return_value={"ok": True, "output": "none"}):
+            with mock.patch("agent_tools.db.get_work_ids_for_search_queries", return_value=[]):
+                result = runner.run_backlog_until_done(query="missing topic", max_cycles=3)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "no_results")
+
     def test_rss_ingest_tool_dispatches_to_module(self):
         runner = agent_tools.AppToolRunner(self.shell)
 
