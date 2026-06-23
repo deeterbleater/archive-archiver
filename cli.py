@@ -864,16 +864,34 @@ def _run_collect_cycle(args, queries, cycle):
             search_results["searched"] += 1
 
     max_bytes = args.max_mb * 1024 * 1024 if args.max_mb else None
+    target_work_ids = []
+    targeted_queries = bool(getattr(args, "query", None) or getattr(args, "queries_file", None))
+    if targeted_queries:
+        target_work_ids = db.get_work_ids_for_search_queries(queries)
+
     download_results, exc = _collect_phase(
         "download",
-        lambda: downloader.download_pending_by_domain(
-            limit=args.download_limit,
-            bucket_dir=args.raw_bucket_dir,
-            requests_per_second=args.rps,
-            max_bytes=max_bytes,
-            max_domains=args.max_domains,
-            per_domain_limit=args.per_domain_limit,
-            quarantine_dir=args.quarantine_dir,
+        lambda: (
+            downloader.download_work_ids_by_domain(
+                target_work_ids,
+                limit=args.download_limit,
+                bucket_dir=args.raw_bucket_dir,
+                requests_per_second=args.rps,
+                max_bytes=max_bytes,
+                max_domains=args.max_domains,
+                per_domain_limit=args.per_domain_limit,
+                quarantine_dir=args.quarantine_dir,
+            )
+            if targeted_queries
+            else downloader.download_pending_by_domain(
+                limit=args.download_limit,
+                bucket_dir=args.raw_bucket_dir,
+                requests_per_second=args.rps,
+                max_bytes=max_bytes,
+                max_domains=args.max_domains,
+                per_domain_limit=args.per_domain_limit,
+                quarantine_dir=args.quarantine_dir,
+            )
         ),
     )
     if exc:
@@ -882,10 +900,19 @@ def _run_collect_cycle(args, queries, cycle):
 
     process_results, exc = _collect_phase(
         "process",
-        lambda: processor.process_pending(
-            limit=args.process_limit,
-            bucket_dir=args.text_bucket_dir,
-            extractor=args.extractor,
+        lambda: (
+            processor.process_pending_for_work_ids(
+                target_work_ids,
+                limit=args.process_limit,
+                bucket_dir=args.text_bucket_dir,
+                extractor=args.extractor,
+            )
+            if targeted_queries
+            else processor.process_pending(
+                limit=args.process_limit,
+                bucket_dir=args.text_bucket_dir,
+                extractor=args.extractor,
+            )
         ),
     )
     if exc:

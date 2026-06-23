@@ -43,25 +43,42 @@ class CollectResilienceTests(unittest.TestCase):
 
         args = collect_args()
         with mock.patch("cli.perform_crawl", side_effect=fake_crawl):
-            with mock.patch("cli.downloader.download_pending_by_domain", return_value={"downloaded": 1, "failed": 0, "skipped": 0}) as download:
-                with mock.patch("cli.processor.process_pending", return_value={"processed": 1, "failed": 0, "skipped": 0}) as process:
-                    with mock.patch("cli.processor.archive_processed_raws", return_value={"archived": 1, "failed": 0, "skipped": 0}) as archive:
-                        errors = cli._run_collect_cycle(args, ["alpha", "beta"], cycle=1)
+            with mock.patch("cli.db.get_work_ids_for_search_queries", return_value=[10, 11]) as work_ids:
+                with mock.patch("cli.downloader.download_work_ids_by_domain", return_value={"downloaded": 1, "failed": 0, "skipped": 0}) as download:
+                    with mock.patch("cli.processor.process_pending_for_work_ids", return_value={"processed": 1, "failed": 0, "skipped": 0}) as process:
+                        with mock.patch("cli.processor.archive_processed_raws", return_value={"archived": 1, "failed": 0, "skipped": 0}) as archive:
+                            errors = cli._run_collect_cycle(args, ["alpha", "beta"], cycle=1)
 
         self.assertEqual(calls, ["alpha", "beta"])
         self.assertEqual(len(errors), 1)
+        work_ids.assert_called_once_with(["alpha", "beta"])
         download.assert_called_once()
+        self.assertEqual(download.call_args.args[0], [10, 11])
         process.assert_called_once()
+        self.assertEqual(process.call_args.args[0], [10, 11])
         archive.assert_called_once()
 
     def test_collect_summarizes_phase_failure_without_raising(self):
         args = collect_args()
         with mock.patch("cli.perform_crawl", return_value=None):
-            with mock.patch("cli.downloader.download_pending_by_domain", side_effect=RuntimeError("downloader exploded")):
-                with mock.patch("cli.processor.process_pending", return_value={"processed": 0, "failed": 0, "skipped": 0}) as process:
-                    errors = cli._run_collect_cycle(args, ["alpha"], cycle=1)
+            with mock.patch("cli.db.get_work_ids_for_search_queries", return_value=[10]):
+                with mock.patch("cli.downloader.download_work_ids_by_domain", side_effect=RuntimeError("downloader exploded")):
+                    with mock.patch("cli.processor.process_pending_for_work_ids", return_value={"processed": 0, "failed": 0, "skipped": 0}) as process:
+                        errors = cli._run_collect_cycle(args, ["alpha"], cycle=1)
 
         self.assertEqual(len(errors), 1)
+        process.assert_called_once()
+
+    def test_auto_cycle_uses_global_backlog_queue(self):
+        args = collect_args(query=None)
+        with mock.patch("cli.perform_crawl", return_value=None):
+            with mock.patch("cli.downloader.download_pending_by_domain", return_value={"downloaded": 1, "failed": 0, "skipped": 0}) as download:
+                with mock.patch("cli.processor.process_pending", return_value={"processed": 1, "failed": 0, "skipped": 0}) as process:
+                    with mock.patch("cli.db.get_work_ids_for_search_queries") as work_ids:
+                        cli._run_collect_cycle(args, ["alpha"], cycle=1)
+
+        work_ids.assert_not_called()
+        download.assert_called_once()
         process.assert_called_once()
 
     def test_auto_queries_prioritize_sparse_categories(self):
