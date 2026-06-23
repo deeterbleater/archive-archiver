@@ -1,0 +1,22 @@
+[Unit]
+Description=Archive Archiver GLM 5.2 download unsticking service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/root/archive-archiver
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/root/archive-archiver/.env
+ExecStartPre=/usr/bin/mkdir -p /root/archive-archiver/logs
+ExecStart=/root/archive-archiver/venv/bin/python /root/archive-archiver/cli.py download-unsticker --sleep-seconds 1800 --limit 25 --model z-ai/glm-5.2 --download-limit 25 --max-domains 4 --per-domain-limit 3 --rps 0.05
+Restart=always
+RestartSec=30
+TimeoutStartSec=120
+TimeoutStopSec=60
+StandardOutput=append:/root/archive-archiver/logs/download-unsticker.log
+StandardError=append:/root/archive-archiver/logs/download-unsticker.log
+
+[Install]
+WantedBy=multi-user.target

@@ -73,6 +73,7 @@ import tui
 import rss_ingest
 import terminal_theme
 import text_validator
+import download_unsticker
 
 PUBLIC_COLLECTOR_QUERIES = [
     "public domain philosophy",
@@ -744,6 +745,25 @@ def handle_download(args):
     print("=================================================")
 
 
+def handle_download_unsticker(args):
+    result = download_unsticker.run_service(
+        sleep_seconds=args.sleep_seconds,
+        once=args.once,
+        idle_exit=not args.keep_alive_when_clear,
+        limit=args.limit,
+        model=args.model,
+        download_limit=args.download_limit,
+        rps=args.rps,
+        max_domains=args.max_domains,
+        per_domain_limit=args.per_domain_limit,
+        max_mb=args.max_mb,
+        use_glm=not args.no_glm,
+    )
+    print("\n=========== DOWNLOAD UNSTICKER SUMMARY ==========")
+    print(result)
+    print("=================================================")
+
+
 def _load_queries(args):
     if args.queries_file:
         with open(args.queries_file, "r", encoding="utf-8") as f:
@@ -1191,6 +1211,20 @@ def main():
     parser_download.add_argument("--max-domains", type=int, help="Maximum domain workers to run in this command.")
     parser_download.add_argument("--per-domain-limit", type=int, help="Maximum files assigned to each domain worker.")
 
+    # Download Unsticker Service
+    parser_download_unsticker = subparsers.add_parser("download-unsticker", help="Run the GLM 5.2 download unsticking service.")
+    parser_download_unsticker.add_argument("--once", action="store_true", help="Run one unsticking cycle and exit.")
+    parser_download_unsticker.add_argument("--sleep-seconds", type=int, default=download_unsticker.DEFAULT_SLEEP_SECONDS, help="Delay between cycles while stuck downloads remain.")
+    parser_download_unsticker.add_argument("--keep-alive-when-clear", action="store_true", help="Keep sleeping even when there are no stuck downloads.")
+    parser_download_unsticker.add_argument("--limit", type=int, default=25, help="Maximum stuck downloads to inspect per cycle.")
+    parser_download_unsticker.add_argument("--model", default=download_unsticker.DEFAULT_MODEL, help="OpenRouter model for planning repairs.")
+    parser_download_unsticker.add_argument("--download-limit", type=int, default=25, help="Maximum repaired files to retry per cycle.")
+    parser_download_unsticker.add_argument("--rps", type=float, default=0.05, help="Per-domain download requests per second for retry downloads.")
+    parser_download_unsticker.add_argument("--max-mb", type=int, default=250, help="Maximum size per retried file in MB. Use 0 for no limit.")
+    parser_download_unsticker.add_argument("--max-domains", type=int, default=4, help="Maximum domain workers for retry downloads.")
+    parser_download_unsticker.add_argument("--per-domain-limit", type=int, default=3, help="Maximum files assigned to each retry domain worker.")
+    parser_download_unsticker.add_argument("--no-glm", action="store_true", help="Use deterministic fallback rules instead of GLM planning.")
+
     # Process Command
     parser_process = subparsers.add_parser("process", help="Extract plaintext from downloaded raw objects.")
     parser_process.add_argument("--limit", type=int, default=10, help="Maximum downloads to process in this run.")
@@ -1339,6 +1373,8 @@ def main():
         handle_status(args)
     elif args.command == "download":
         handle_download(args)
+    elif args.command == "download-unsticker":
+        handle_download_unsticker(args)
     elif args.command == "process":
         handle_process(args)
     elif args.command == "validate-texts":

@@ -12,6 +12,8 @@ STALE_DOWNLOAD_HOURS = 2
 
 ACTIVE_FAILED_DOWNLOAD_WHERE = """
 downloads.status = 'failed'
+AND files.download_disabled_at IS NULL
+AND COALESCE(files.download_url, files.url, '') <> ''
 AND NOT EXISTS (
     SELECT 1
     FROM files sibling_files
@@ -41,6 +43,7 @@ AND NOT EXISTS (
       ON sibling_downloads.file_id = sibling_files.id
     WHERE sibling_files.work_id = files.work_id
       AND sibling_downloads.id IS NULL
+      AND sibling_files.download_disabled_at IS NULL
       AND COALESCE(sibling_files.download_url, sibling_files.url, '') <> ''
 )
 """
@@ -412,6 +415,8 @@ def init_db():
     _ensure_column(cursor, "downloads", "etag", "TEXT")
     _ensure_column(cursor, "downloads", "last_modified", "TEXT")
     _ensure_column(cursor, "files", "trust_level", "TEXT NOT NULL DEFAULT 'trusted'")
+    _ensure_column(cursor, "files", "download_disabled_at", "TIMESTAMP")
+    _ensure_column(cursor, "files", "download_disabled_reason", "TEXT")
     _ensure_column(cursor, "downloads", "scan_status", "TEXT")
     _ensure_column(cursor, "downloads", "scan_engine", "TEXT")
     _ensure_column(cursor, "downloads", "scan_signature", "TEXT")
@@ -786,7 +791,9 @@ def add_file(work_id, site, format, url, file_size=None, download_source=None, d
         download_source = excluded.download_source,
         download_url = excluded.download_url,
         site = excluded.site,
-        trust_level = excluded.trust_level
+        trust_level = excluded.trust_level,
+        download_disabled_at = NULL,
+        download_disabled_reason = NULL
     """, (work_id, site, format, url, file_size, download_source, download_url, trust_level))
     
     conn.commit()
@@ -880,6 +887,7 @@ def get_backlog_counts(extractor="plaintext.v2"):
     LEFT JOIN downloads ON downloads.file_id = files.id
     WHERE
         COALESCE(files.download_url, files.url, '') <> ''
+        AND files.download_disabled_at IS NULL
         AND downloads.id IS NULL
         AND NOT EXISTS (
             SELECT 1
@@ -978,6 +986,44 @@ def get_recent_failed_downloads(limit=5):
     WHERE
         {ACTIVE_FAILED_DOWNLOAD_WHERE}
     ORDER BY downloads.updated_at DESC, downloads.id DESC
+    LIMIT ?
+    """, (limit,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_stuck_downloads(limit=25):
+    """Return active failed downloads that currently block a work from progressing."""
+    limit = max(1, min(int(limit or 25), 100))
+    conn = get_connection()
+    expire_stale_downloads(conn=conn)
+    cursor = conn.cursor()
+    cursor.execute(f"""
+    SELECT
+        downloads.id,
+        downloads.file_id,
+        downloads.http_status,
+        downloads.error,
+        downloads.attempts,
+        downloads.updated_at,
+        files.work_id,
+        files.site,
+        files.format,
+        files.url,
+        files.download_url,
+        files.download_source,
+        files.file_size,
+        files.trust_level,
+        works.title,
+        works.author,
+        works.search_query
+    FROM downloads
+    JOIN files ON files.id = downloads.file_id
+    JOIN works ON works.id = files.work_id
+    WHERE
+        {ACTIVE_FAILED_DOWNLOAD_WHERE}
+    ORDER BY downloads.updated_at ASC, downloads.id ASC
     LIMIT ?
     """, (limit,))
     rows = [dict(row) for row in cursor.fetchall()]
@@ -1143,6 +1189,7 @@ def get_pending_download_files_for_work_ids(work_ids, limit=10):
     WHERE
         files.work_id IN ({placeholders})
         AND COALESCE(files.download_url, files.url, '') <> ''
+        AND files.download_disabled_at IS NULL
         AND downloads.id IS NULL
         AND NOT EXISTS (
             SELECT 1
@@ -1179,6 +1226,38 @@ def get_pending_download_files_for_work_ids(work_ids, limit=10):
         for _work_id, work_rows in sorted(by_work.items())
     ]
     return [row for row in rows if row][:limit]
+
+
+def get_pending_download_files_for_file_ids(file_ids, limit=10):
+    """Return specific pending file rows after a repair/requeue operation."""
+    file_ids = [int(file_id) for file_id in file_ids if file_id is not None]
+    if not file_ids or limit <= 0:
+        return []
+    placeholders = ",".join("?" for _ in file_ids)
+    conn = get_connection()
+    expire_stale_downloads(conn=conn)
+    cursor = conn.cursor()
+    cursor.execute(f"""
+    SELECT
+        files.*,
+        works.title,
+        works.author,
+        downloads.status AS download_status,
+        downloads.attempts AS download_attempts
+    FROM files
+    JOIN works ON works.id = files.work_id
+    LEFT JOIN downloads ON downloads.file_id = files.id
+    WHERE
+        files.id IN ({placeholders})
+        AND COALESCE(files.download_url, files.url, '') <> ''
+        AND files.download_disabled_at IS NULL
+        AND downloads.id IS NULL
+    ORDER BY files.id ASC
+    LIMIT ?
+    """, [*file_ids, limit])
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
 
 
 def get_work_ids_for_search_queries(queries):
@@ -1290,6 +1369,71 @@ def mark_download_failed(file_id, error, http_status=None, scan_status=None, sca
     """, (str(error)[:1000], http_status, scan_status, scan_engine, scan_signature, quarantine_uri, file_id))
     conn.commit()
     conn.close()
+
+
+def reset_failed_download(file_id, reason=None):
+    """Remove a failed attempt so the file can be selected by pending-download queries again."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        DELETE FROM downloads
+        WHERE file_id = ? AND status = 'failed'
+        """,
+        (file_id,),
+    )
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def replace_file_download_url(file_id, download_url, reason=None):
+    """Replace a failed file URL and requeue it for download."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE files
+        SET
+            download_url = ?,
+            download_disabled_at = NULL,
+            download_disabled_reason = NULL
+        WHERE id = ?
+        """,
+        (str(download_url), file_id),
+    )
+    updated = cursor.rowcount
+    cursor.execute(
+        """
+        DELETE FROM downloads
+        WHERE file_id = ? AND status = 'failed'
+        """,
+        (file_id,),
+    )
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def disable_download_file(file_id, reason):
+    """Retire a terminal broken download candidate without deleting the work or file record."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE files
+        SET
+            download_disabled_at = CURRENT_TIMESTAMP,
+            download_disabled_reason = ?
+        WHERE id = ?
+        """,
+        (str(reason or "disabled by download unsticker")[:1000], file_id),
+    )
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed
 
 def get_pending_extractions(limit=10, extractor="plaintext.v1"):
     """Returns downloaded objects with no extraction attempt for this extractor."""
