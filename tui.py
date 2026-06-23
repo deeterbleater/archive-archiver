@@ -768,7 +768,7 @@ def _overview_queue_panel(backlog):
     return _panel(table, "Work Queue")
 
 
-def _triage_panel(limit=2):
+def _triage_panel(limit=6):
     rows = db.get_recent_pipeline_failures(limit=limit)
     if not rows:
         return None
@@ -793,7 +793,7 @@ def _triage_panel(limit=2):
 
 
 def _attention_panel(backlog, compact=False):
-    triage = _triage_panel(limit=1 if compact else 2)
+    triage = _triage_panel(limit=1 if compact else 6)
     if triage:
         return triage
     return _queue_preview()

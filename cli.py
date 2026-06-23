@@ -1120,7 +1120,7 @@ def main():
     
     parser = argparse.ArgumentParser(description="Archive crawler leveraging OpenRouter LLM analysis.")
     parser.add_argument("--model", type=str, help="Override default OpenRouter model to use.")
-    parser.add_argument("--max-results", type=int, default=2, help="Maximum search results to parse per query (default: 2)")
+    parser.add_argument("--max-results", type=int, default=6, help="Maximum search results to parse per query (default: 6)")
     
     subparsers = parser.add_subparsers(dest="command", required=True, help="Command to run")
     

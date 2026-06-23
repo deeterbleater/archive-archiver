@@ -726,6 +726,13 @@ class TuiTests(unittest.TestCase):
         self.assertIn("Broken Download", output)
         self.assertIn("download:504", output)
 
+    def test_attention_panel_shows_six_triage_rows_when_roomy(self):
+        with patch.object(tui, "_triage_panel", return_value="triage") as triage:
+            panel = tui._attention_panel({}, compact=False)
+
+        self.assertEqual(panel, "triage")
+        triage.assert_called_once_with(limit=6)
+
 
 if __name__ == "__main__":
     unittest.main()

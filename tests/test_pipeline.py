@@ -300,6 +300,35 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(db.get_backlog_counts()["pending_downloads"], 0)
         self.assertEqual(db.get_backlog_counts()["failed_downloads"], 1)
 
+    def test_stale_downloading_attempt_fails_automatically(self):
+        work_id = db.add_work(title="Stale Download", author="Test Author", search_query="failures")
+        db.add_file(
+            work_id=work_id,
+            site="stale.example",
+            format="PDF",
+            url="https://stale.example/detail",
+            download_source="fixture",
+            download_url="https://stale.example/file.pdf",
+        )
+        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        db.mark_download_started(file_id)
+        conn = db.get_connection()
+        conn.execute(
+            "UPDATE downloads SET updated_at = datetime('now', '-3 hours') WHERE file_id = ?",
+            (file_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        self.assertEqual(db.expire_stale_downloads(hours=2), 1)
+        self.assertEqual(db.get_pending_download_files(limit=10), [])
+        self.assertEqual(db.get_stats()["downloads_by_status"], {"failed": 1})
+
+        conn = db.get_connection()
+        row = conn.execute("SELECT error FROM downloads WHERE file_id = ?", (file_id,)).fetchone()
+        conn.close()
+        self.assertIn("stale download attempt exceeded 2h timeout", row["error"])
+
     def test_pending_downloads_choose_one_preferred_file_per_work(self):
         work_id = db.add_work(title="Many Formats", author="Test Author", search_query="formats")
         db.add_file(

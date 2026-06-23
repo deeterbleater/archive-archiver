@@ -8,6 +8,7 @@ import urllib.parse
 import file_selection
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "archive_works.db")
+STALE_DOWNLOAD_HOURS = 2
 
 DEFAULT_CATEGORIES = [
     {
@@ -67,6 +68,35 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def expire_stale_downloads(hours=STALE_DOWNLOAD_HOURS, conn=None):
+    """Mark orphaned in-progress downloads failed so they stop blocking work."""
+    hours = max(1, int(hours or STALE_DOWNLOAD_HOURS))
+    own_conn = conn is None
+    conn = conn or get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE downloads
+        SET
+            status = 'failed',
+            error = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'downloading'
+          AND updated_at < datetime('now', ?)
+        """,
+        (
+            f"stale download attempt exceeded {hours}h timeout",
+            f"-{hours} hours",
+        ),
+    )
+    expired = cursor.rowcount
+    if expired:
+        conn.commit()
+    if own_conn:
+        conn.close()
+    return expired
 
 def _ensure_column(cursor, table, column, definition):
     cursor.execute(f"PRAGMA table_info({table})")
@@ -667,6 +697,7 @@ def add_work(title, author=None, search_query=None):
 def work_has_archive_activity(work_id):
     """Returns true once a work has usable or in-flight archive state."""
     conn = get_connection()
+    expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
     cursor.execute("""
     SELECT 1
@@ -757,6 +788,7 @@ def mark_rss_item_archived(feed_url, item_id, item_url=None, work_id=None):
 def get_stats():
     """Returns database statistics."""
     conn = get_connection()
+    expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
     
     cursor.execute("SELECT COUNT(*) FROM works")
@@ -798,6 +830,7 @@ def get_stats():
 
 def get_backlog_counts(extractor="plaintext.v2"):
     conn = get_connection()
+    expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -872,6 +905,7 @@ def get_backlog_counts(extractor="plaintext.v2"):
 def get_recent_failed_downloads(limit=5):
     limit = max(1, min(int(limit or 5), 25))
     conn = get_connection()
+    expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
     cursor.execute("""
     SELECT
@@ -899,6 +933,7 @@ def get_recent_failed_downloads(limit=5):
 def get_recent_pipeline_failures(limit=5):
     limit = max(1, min(int(limit or 5), 25))
     conn = get_connection()
+    expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
     failures = []
 
@@ -971,6 +1006,7 @@ def get_recent_pipeline_failures(limit=5):
 def get_pending_download_files(limit=10):
     """Returns one preferred pending file per work with no prior download attempt."""
     conn = get_connection()
+    expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -1032,6 +1068,7 @@ def get_pending_download_files_for_work_ids(work_ids, limit=10):
 
     placeholders = ",".join("?" for _ in work_ids)
     conn = get_connection()
+    expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
     cursor.execute(f"""
     SELECT
