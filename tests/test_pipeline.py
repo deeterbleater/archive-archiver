@@ -300,6 +300,43 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(db.get_backlog_counts()["pending_downloads"], 0)
         self.assertEqual(db.get_backlog_counts()["failed_downloads"], 1)
 
+    def test_successful_sibling_clears_download_failure_from_actionable_backlog(self):
+        work_id = db.add_work(title="Recovered Link", author="Test Author", search_query="failures")
+        db.add_file(
+            work_id=work_id,
+            site="broken.example",
+            format="PDF",
+            url="https://broken.example/detail",
+            download_source="fixture",
+            download_url="https://broken.example/missing.pdf",
+        )
+        failed_file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        db.mark_download_started(failed_file_id)
+        db.mark_download_failed(failed_file_id, "HTTP 403", http_status=403)
+        db.add_file(
+            work_id=work_id,
+            site="mirror.example",
+            format="Text",
+            url="https://mirror.example/detail",
+            download_source="fixture",
+            download_url="https://mirror.example/recovered.txt",
+        )
+        recovered_file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        db.mark_download_started(recovered_file_id)
+        db.mark_download_succeeded(
+            file_id=recovered_file_id,
+            bucket_uri="file:///tmp/recovered.txt",
+            storage_key="recovered.txt",
+            sha256="recovered-sha",
+            byte_count=9,
+            content_type="text/plain",
+            http_status=200,
+            final_url="https://mirror.example/recovered.txt",
+        )
+
+        self.assertEqual(db.get_backlog_counts()["failed_downloads"], 0)
+        self.assertEqual(db.get_recent_failed_downloads(limit=5), [])
+
     def test_stale_downloading_attempt_fails_automatically(self):
         work_id = db.add_work(title="Stale Download", author="Test Author", search_query="failures")
         db.add_file(
@@ -328,6 +365,60 @@ class PipelineStateTests(unittest.TestCase):
         row = conn.execute("SELECT error FROM downloads WHERE file_id = ?", (file_id,)).fetchone()
         conn.close()
         self.assertIn("stale download attempt exceeded 2h timeout", row["error"])
+
+    def test_pending_downloads_ignore_unsupported_operator_required_urls(self):
+        work_id = db.add_work(title="Unsupported Sources", author="Test Author", search_query="sources")
+        db.add_file(
+            work_id=work_id,
+            site="annas-archive.org",
+            format="PDF",
+            url="https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab",
+            download_source="fixture",
+            download_url="ipfs://bafynotdirect",
+        )
+        db.add_file(
+            work_id=work_id,
+            site="libgen.onion",
+            format="EPUB",
+            url="http://libgenfrialc7tguyjywa36vtrdcplwpxaw43h6o63dmmwhvavo5rqqd.onion/detail",
+            download_source="LibGen Tor",
+            download_url="http://libgenfrialc7tguyjywa36vtrdcplwpxaw43h6o63dmmwhvavo5rqqd.onion/file.epub",
+        )
+        db.add_file(
+            work_id=work_id,
+            site="annas-archive.org",
+            format="PDF",
+            url="https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab",
+            download_source="Anna detail",
+            download_url="https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab",
+        )
+        db.add_file(
+            work_id=work_id,
+            site="mirror.example",
+            format="Text",
+            url="https://mirror.example/detail",
+            download_source="fixture",
+            download_url="https://mirror.example/work.txt",
+        )
+
+        pending = db.get_pending_download_files(limit=10)
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["download_url"], "https://mirror.example/work.txt")
+
+    def test_pending_downloads_drop_work_with_only_unsupported_urls(self):
+        work_id = db.add_work(title="Only Unsupported", author="Test Author", search_query="sources")
+        db.add_file(
+            work_id=work_id,
+            site="annas-archive.org",
+            format="PDF",
+            url="https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab",
+            download_source="fixture",
+            download_url="ipfs://bafynotdirect",
+        )
+
+        self.assertEqual(db.get_pending_download_files(limit=10), [])
+        self.assertEqual(db.get_backlog_counts()["pending_downloads"], 0)
 
     def test_pending_downloads_choose_one_preferred_file_per_work(self):
         work_id = db.add_work(title="Many Formats", author="Test Author", search_query="formats")

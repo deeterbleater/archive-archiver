@@ -10,6 +10,41 @@ import file_selection
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "archive_works.db")
 STALE_DOWNLOAD_HOURS = 2
 
+ACTIVE_FAILED_DOWNLOAD_WHERE = """
+downloads.status = 'failed'
+AND NOT EXISTS (
+    SELECT 1
+    FROM files sibling_files
+    JOIN downloads sibling_downloads
+      ON sibling_downloads.file_id = sibling_files.id
+    LEFT JOIN extractions sibling_extractions
+      ON sibling_extractions.download_id = sibling_downloads.id
+    WHERE sibling_files.work_id = files.work_id
+      AND (
+          sibling_downloads.status IN ('pending', 'downloading')
+          OR (
+              sibling_downloads.status = 'downloaded'
+              AND (
+                  sibling_extractions.id IS NULL
+                  OR (
+                      sibling_extractions.status IN ('pending', 'processing', 'processed')
+                      AND COALESCE(sibling_extractions.quality_status, 'usable') != 'unusable'
+                  )
+              )
+          )
+      )
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM files sibling_files
+    LEFT JOIN downloads sibling_downloads
+      ON sibling_downloads.file_id = sibling_files.id
+    WHERE sibling_files.work_id = files.work_id
+      AND sibling_downloads.id IS NULL
+      AND COALESCE(sibling_files.download_url, sibling_files.url, '') <> ''
+)
+"""
+
 DEFAULT_CATEGORIES = [
     {
         "name": "egoism",
@@ -834,8 +869,14 @@ def get_backlog_counts(extractor="plaintext.v2"):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT COUNT(DISTINCT files.work_id)
+    SELECT
+        files.*,
+        works.title,
+        works.author,
+        downloads.status AS download_status,
+        downloads.attempts AS download_attempts
     FROM files
+    JOIN works ON works.id = files.work_id
     LEFT JOIN downloads ON downloads.file_id = files.id
     WHERE
         COALESCE(files.download_url, files.url, '') <> ''
@@ -863,9 +904,22 @@ def get_backlog_counts(extractor="plaintext.v2"):
               )
         )
     """)
-    pending_downloads = cursor.fetchone()[0]
+    pending_candidates = [dict(row) for row in cursor.fetchall()]
+    pending_by_work = {}
+    for row in pending_candidates:
+        pending_by_work.setdefault(row["work_id"], []).append(row)
+    pending_downloads = sum(
+        1
+        for work_rows in pending_by_work.values()
+        if file_selection.select_best_file(work_rows)
+    )
 
-    cursor.execute("SELECT COUNT(*) FROM downloads WHERE status = 'failed'")
+    cursor.execute(f"""
+    SELECT COUNT(*)
+    FROM downloads
+    JOIN files ON files.id = downloads.file_id
+    WHERE {ACTIVE_FAILED_DOWNLOAD_WHERE}
+    """)
     failed_downloads = cursor.fetchone()[0]
 
     cursor.execute("""
@@ -907,7 +961,7 @@ def get_recent_failed_downloads(limit=5):
     conn = get_connection()
     expire_stale_downloads(conn=conn)
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(f"""
     SELECT
         downloads.id,
         downloads.file_id,
@@ -921,7 +975,8 @@ def get_recent_failed_downloads(limit=5):
     FROM downloads
     JOIN files ON files.id = downloads.file_id
     JOIN works ON works.id = files.work_id
-    WHERE downloads.status = 'failed'
+    WHERE
+        {ACTIVE_FAILED_DOWNLOAD_WHERE}
     ORDER BY downloads.updated_at DESC, downloads.id DESC
     LIMIT ?
     """, (limit,))
@@ -937,7 +992,7 @@ def get_recent_pipeline_failures(limit=5):
     cursor = conn.cursor()
     failures = []
 
-    cursor.execute("""
+    cursor.execute(f"""
     SELECT
         'download' AS stage,
         downloads.id AS id,
@@ -951,7 +1006,8 @@ def get_recent_pipeline_failures(limit=5):
     FROM downloads
     JOIN files ON files.id = downloads.file_id
     JOIN works ON works.id = files.work_id
-    WHERE downloads.status = 'failed'
+    WHERE
+        {ACTIVE_FAILED_DOWNLOAD_WHERE}
     ORDER BY downloads.updated_at DESC, downloads.id DESC
     LIMIT ?
     """, (limit,))

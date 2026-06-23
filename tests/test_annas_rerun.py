@@ -24,6 +24,12 @@ class AnnasRerunScriptTests(unittest.TestCase):
         db.DB_FILE = self.old_db_file
         self.tempdir.cleanup()
 
+    def _file_id_for_work(self, work_id):
+        conn = db.get_connection()
+        row = conn.execute("SELECT id FROM files WHERE work_id = ? ORDER BY id DESC LIMIT 1", (work_id,)).fetchone()
+        conn.close()
+        return row["id"]
+
     def _add_stubbed_work(self):
         work_id = db.add_work("Stubbed Anna Work", "Ada Author", "anna repair")
         db.add_file(
@@ -34,7 +40,7 @@ class AnnasRerunScriptTests(unittest.TestCase):
             download_url="https://annas-archive.gl/md5/abc123abc123abc123abc123abc123ab",
             trust_level="untrusted",
         )
-        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        file_id = self._file_id_for_work(work_id)
         db.mark_download_started(file_id)
         db.mark_download_succeeded(
             file_id=file_id,
@@ -80,7 +86,7 @@ class AnnasRerunScriptTests(unittest.TestCase):
             url="https://archive.org/details/stubbedannawork",
             download_url="https://archive.org/download/stubbedannawork/stubbedannawork.txt",
         )
-        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        file_id = self._file_id_for_work(replacement_id)
         db.mark_download_started(file_id)
         db.mark_download_succeeded(
             file_id=file_id,
@@ -121,7 +127,7 @@ class AnnasRerunScriptTests(unittest.TestCase):
             download_url="https://annas-archive.gl/md5/def123def123def123def123def123de",
             trust_level="untrusted",
         )
-        file_id = db.get_pending_download_files(limit=1)[0]["id"]
+        file_id = self._file_id_for_work(work_id)
         db.mark_download_started(file_id)
         db.mark_download_succeeded(
             file_id=file_id,
