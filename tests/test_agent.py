@@ -120,6 +120,41 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["sources"], ["libgen"])
         self.assertEqual(run.call_args.kwargs["query"], "Philip K Dick novels")
 
+    def test_process_backlog_uses_direct_global_backlog_workflow(self):
+        result_payload = {
+            "ok": False,
+            "reason": "stalled",
+            "query": None,
+            "cycles": 3,
+            "history": [
+                {
+                    "download": {"downloaded": 1, "failed": 2},
+                    "process": {"processed": 3},
+                    "archive_raw": {"archived": 4},
+                }
+            ],
+            "backlog": {
+                "pending_downloads": 8,
+                "pending_extractions": 0,
+                "pending_raw_archives": 0,
+                "failed_downloads": 5,
+            },
+        }
+
+        with mock.patch.object(self.shell.tools, "run_backlog_until_done", return_value=result_payload) as run:
+            with mock.patch("llm.chat_completion", side_effect=AssertionError("model should not handle backlog work")):
+                result, output = self._run("process backlog")
+
+        self.assertIsNone(result)
+        self.assertIn("the backlog", output)
+        self.assertIn("1 downloaded", output)
+        self.assertIn("3 processed", output)
+        self.assertIn("4 raw archived", output)
+        self.assertIn("blocked downloads: 5", output)
+        run.assert_called_once()
+        self.assertIsNone(run.call_args.kwargs["query"])
+        self.assertEqual(run.call_args.kwargs["max_cycles"], 3)
+
     def test_model_command_sets_exact_model(self):
         result, output = self._run("/model minimax/minimax-m3")
 
@@ -241,6 +276,33 @@ class AgentHarnessTests(unittest.TestCase):
         download.assert_called_once()
         self.assertEqual(download.call_args.args[0], [42])
         global_download.assert_not_called()
+
+    def test_backlog_tool_excludes_unavailable_domain_in_later_cycles(self):
+        runner = agent_tools.AppToolRunner(self.shell)
+        backlogs = [
+            {"pending_downloads": 3, "failed_downloads": 0, "pending_extractions": 0, "pending_raw_archives": 0},
+            {"pending_downloads": 2, "failed_downloads": 1, "pending_extractions": 0, "pending_raw_archives": 0},
+            {"pending_downloads": 2, "failed_downloads": 1, "pending_extractions": 0, "pending_raw_archives": 0},
+        ]
+        last_backlog = backlogs[-1]
+
+        def fake_backlog(_extractor=None):
+            return backlogs.pop(0) if backlogs else last_backlog
+
+        with mock.patch("agent_tools.db.get_backlog_counts", side_effect=fake_backlog):
+            with mock.patch.object(
+                runner,
+                "_download",
+                side_effect=[
+                    {"ok": True, "results": {"downloaded": 0, "failed": 1, "skipped": 24, "unavailable_domains": ["arxiv.org"]}},
+                    {"ok": True, "results": {"downloaded": 0, "failed": 0, "skipped": 0}},
+                ],
+            ) as download:
+                result = runner.run_backlog_until_done(max_cycles=2)
+
+        self.assertEqual(result["reason"], "stalled")
+        self.assertEqual(download.call_args_list[0].kwargs["excluded_domains"], set())
+        self.assertEqual(download.call_args_list[1].kwargs["excluded_domains"], {"arxiv.org"})
 
     def test_backlog_tool_query_reports_no_results(self):
         runner = agent_tools.AppToolRunner(self.shell)

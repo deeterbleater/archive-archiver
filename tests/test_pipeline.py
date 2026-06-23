@@ -995,6 +995,39 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(sorted(seen_domains), ["alpha.example", "beta.example"])
         self.assertEqual(db.get_stats()["downloads_by_status"], {"downloaded": 2})
 
+    def test_domain_worker_stops_after_domain_connection_failure(self):
+        for title, path in (("First Fixture", "first.txt"), ("Second Fixture", "second.txt")):
+            work_id = db.add_work(title=title, author="Test Author", search_query="domains")
+            db.add_file(
+                work_id=work_id,
+                site="dead.example",
+                format="Text",
+                url=f"https://dead.example/{path}",
+                download_source="fixture",
+                download_url=f"https://dead.example/{path}",
+            )
+
+        attempted = []
+        original_download_file = downloader.download_file
+
+        def fake_download_file(row, bucket_dir, limiter, max_bytes, quarantine_dir=None):
+            attempted.append(row["id"])
+            raise downloader.requests.ConnectionError("DNS unavailable")
+
+        try:
+            downloader.download_file = fake_download_file
+            results = downloader.download_pending_by_domain(limit=10, requests_per_second=1000)
+        finally:
+            downloader.download_file = original_download_file
+
+        self.assertEqual(results["downloaded"], 0)
+        self.assertEqual(results["failed"], 1)
+        self.assertEqual(results["skipped"], 1)
+        self.assertEqual(results["unavailable_domains"], ["dead.example"])
+        self.assertEqual(len(attempted), 1)
+        self.assertEqual(db.get_stats()["downloads_by_status"], {"failed": 1})
+        self.assertEqual(db.get_backlog_counts()["pending_downloads"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

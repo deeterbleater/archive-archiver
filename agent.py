@@ -68,6 +68,12 @@ APP_WORK_RE = re.compile(
     r"(?P<query>.+?)\s*[.!?]*$",
     re.IGNORECASE,
 )
+BACKLOG_WORK_RE = re.compile(
+    r"^(?:please\s+)?(?:(?:process|download|drain|clear|run|work|unstick)\s+)?"
+    r"(?:the\s+)?(?:existing\s+|global\s+)?(?:backlog|queue)"
+    r"(?:\s+(?:please|now|until\s+done|to\s+completion|through\s+the\s+pipeline))*\s*[.!?]*$",
+    re.IGNORECASE,
+)
 
 
 SYSTEM_PROMPT = """
@@ -309,6 +315,8 @@ class ArchiveAgentShell(cmd.Cmd):
         self._auto_compact()
 
     def _handle_direct_app_work(self, line):
+        if self._handle_direct_backlog_work(line):
+            return True
         match = APP_WORK_RE.match(line.strip())
         if not match:
             return False
@@ -338,20 +346,50 @@ class ArchiveAgentShell(cmd.Cmd):
         self._auto_compact()
         return True
 
+    def _handle_direct_backlog_work(self, line):
+        if not BACKLOG_WORK_RE.match(line.strip()):
+            return False
+        result = self.tools.run_backlog_until_done(
+            query=None,
+            download_limit=max(self.config["download_limit"], 25),
+            process_limit=max(self.config["process_limit"], 25),
+            max_cycles=3,
+        )
+        summary = self._direct_app_work_summary(result)
+        terminal_theme.print_markup(summary)
+        self.memory.append("user", line, {"model": self._active_model(), "direct_backlog_work": True})
+        self.memory.append("assistant", summary, {"model": self._active_model(), "direct_backlog_work": True})
+        self._auto_compact()
+        return True
+
     def _direct_app_work_summary(self, result):
         history = result.get("history") or []
         downloaded = sum((step.get("download") or {}).get("downloaded", 0) for step in history)
         processed = sum((step.get("process") or {}).get("processed", 0) for step in history)
+        archived = sum((step.get("archive_raw") or {}).get("archived", 0) for step in history)
         failed = sum((step.get("download") or {}).get("failed", 0) for step in history)
-        query = result.get("query") or "requested work"
+        query = result.get("query")
+        target = query or "the backlog"
         reason = result.get("reason")
         if reason == "no_results":
-            return f"No archive results were added for [highlight]{query}[/highlight]. Try a narrower title, author, or source."
+            return f"No archive results were added for [highlight]{target}[/highlight]. Try a narrower title, author, or source."
+        backlog = result.get("backlog") or {}
+        backlog_bits = []
+        for label, key in (
+            ("pending downloads", "pending_downloads"),
+            ("pending text", "pending_extractions"),
+            ("pending raw archives", "pending_raw_archives"),
+            ("blocked downloads", "failed_downloads"),
+        ):
+            if key in backlog:
+                backlog_bits.append(f"{label}: {backlog.get(key, 0)}")
+        suffix = f" Backlog now: {', '.join(backlog_bits)}." if backlog_bits else ""
         return (
-            f"Ran focused archive workflow for [highlight]{query}[/highlight]: "
-            f"{downloaded} downloaded, {processed} processed, {failed} failed "
-            f"over {result.get('cycles', 0)} cycle(s). Reason: {reason}."
+            f"Ran archive workflow for [highlight]{target}[/highlight]: "
+            f"{downloaded} downloaded, {processed} processed, {archived} raw archived, {failed} download failures "
+            f"over {result.get('cycles', 0)} cycle(s). Reason: {reason}.{suffix}"
         )
+
 
     def _run_llm_tool_loop(
         self,

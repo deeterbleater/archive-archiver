@@ -734,6 +734,9 @@ class AppToolRunner:
         return {"ok": True, "output": output[-12000:], "backlog": db.get_backlog_counts(processor.EXTRACTOR_VERSION)}
 
     def download(self, limit=None, domain_workers=True):
+        return self._download(limit=limit, domain_workers=domain_workers)
+
+    def _download(self, limit=None, domain_workers=True, excluded_domains=None):
         limit = limit or self.shell.config["download_limit"]
         max_bytes = self.shell.config["max_mb"] * 1024 * 1024 if self.shell.config["max_mb"] else None
         if domain_workers:
@@ -745,6 +748,7 @@ class AppToolRunner:
                 max_domains=self.shell.config["max_domains"],
                 per_domain_limit=self.shell.config["per_domain_limit"],
                 quarantine_dir=downloader.DEFAULT_QUARANTINE_BUCKET_DIR,
+                excluded_domains=excluded_domains,
             )
         else:
             results = downloader.download_pending(
@@ -796,6 +800,7 @@ class AppToolRunner:
         query = str(query or "").strip()
         target_work_ids = []
         search_output = ""
+        unavailable_domains = set()
         if query:
             archive_raw = False
             selected_sources = self._normalize_sources(sources)
@@ -846,7 +851,11 @@ class AppToolRunner:
                         quarantine_dir=downloader.DEFAULT_QUARANTINE_BUCKET_DIR,
                     )
                 else:
-                    step["download"] = self.download(limit=download_limit)["results"]
+                    step["download"] = self._download(
+                        limit=download_limit,
+                        excluded_domains=set(unavailable_domains),
+                    )["results"]
+                unavailable_domains.update(step["download"].get("unavailable_domains") or [])
             if before["pending_extractions"] > 0:
                 if query:
                     step["process"] = processor.process_pending_for_work_ids(

@@ -537,11 +537,15 @@ def download_pending(limit=10, bucket_dir=DEFAULT_RAW_BUCKET_DIR, requests_per_s
     return results
 
 
+def _is_domain_unavailable_error(exc):
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
+
 def _download_domain_rows(domain, rows, bucket_dir, requests_per_second, max_bytes, quarantine_dir):
     limiter = HostRateLimiter(requests_per_second=requests_per_second)
     results = {"downloaded": 0, "failed": 0, "skipped": 0}
 
-    for row in rows:
+    for index, row in enumerate(rows):
         file_id = row["id"]
         terminal_theme.print_pip("pending", f"[{domain}] download file {file_id}: {row.get('title')} [{row.get('format')}]")
         db.mark_download_started(file_id)
@@ -565,6 +569,13 @@ def _download_domain_rows(domain, rows, bucket_dir, requests_per_second, max_byt
             )
             results["failed"] += 1
             terminal_theme.print_pip("failed", f"[{domain}] download failed: {exc}")
+            if _is_domain_unavailable_error(exc):
+                skipped = len(rows) - index - 1
+                results["skipped"] += skipped
+                results["domain_unavailable"] = 1
+                if skipped:
+                    terminal_theme.print_pip("warning", f"[{domain}] domain unavailable; leaving {skipped} queued")
+                break
 
     return results
 
@@ -577,11 +588,15 @@ def download_pending_by_domain(
     max_domains=None,
     per_domain_limit=None,
     quarantine_dir=DEFAULT_QUARANTINE_BUCKET_DIR,
+    excluded_domains=None,
 ):
     if per_domain_limit is not None and per_domain_limit <= 0:
         return {"downloaded": 0, "failed": 0, "skipped": 0}
 
     rows = db.get_pending_download_files(limit=limit)
+    excluded_domains = {str(domain).lower() for domain in (excluded_domains or [])}
+    if excluded_domains:
+        rows = [row for row in rows if download_domain(row) not in excluded_domains]
     return download_rows_by_domain(
         rows,
         bucket_dir=bucket_dir,
@@ -638,6 +653,7 @@ def download_rows_by_domain(
         domains = domains[:max_domains]
 
     results = {"downloaded": 0, "failed": 0, "skipped": 0}
+    unavailable_domains = []
     if not domains:
         return results
 
@@ -656,8 +672,16 @@ def download_rows_by_domain(
             for domain in domains
         }
         for future in as_completed(futures):
+            domain = futures[future]
             domain_results = future.result()
             for key, count in domain_results.items():
+                if key == "domain_unavailable":
+                    if count:
+                        unavailable_domains.append(domain)
+                    continue
                 results[key] += count
+
+    if unavailable_domains:
+        results["unavailable_domains"] = sorted(unavailable_domains)
 
     return results
